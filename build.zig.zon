@@ -1,0 +1,7 @@
+.{
+    .name = .zay,
+    .fingerprint = 0xf318a7eaa4b532b5,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .paths = .{ "build.zig", "build.zig.zon", "src", "tests", "README.md" },
+}

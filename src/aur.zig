@@ -16,11 +16,12 @@ const RpcPackage = struct {
     Depends: []const []const u8 = &.{},
     MakeDepends: []const []const u8 = &.{},
     CheckDepends: []const []const u8 = &.{},
+    OptDepends: []const []const u8 = &.{},
     Provides: []const []const u8 = &.{},
     Conflicts: []const []const u8 = &.{},
     Replaces: []const []const u8 = &.{},
     fn package(p: RpcPackage) Package {
-        return .{ .name = p.Name, .base = p.PackageBase, .version = p.Version, .description = p.Description, .url = p.URL, .maintainer = p.Maintainer, .votes = p.NumVotes, .popularity = p.Popularity, .out_of_date = p.OutOfDate, .depends = p.Depends, .make_depends = p.MakeDepends, .check_depends = p.CheckDepends, .provides = p.Provides, .conflicts = p.Conflicts, .replaces = p.Replaces };
+        return .{ .name = p.Name, .base = p.PackageBase, .version = p.Version, .description = p.Description, .url = p.URL, .maintainer = p.Maintainer, .votes = p.NumVotes, .popularity = p.Popularity, .out_of_date = p.OutOfDate, .depends = p.Depends, .make_depends = p.MakeDepends, .check_depends = p.CheckDepends, .opt_depends = p.OptDepends, .provides = p.Provides, .conflicts = p.Conflicts, .replaces = p.Replaces };
     }
 };
 const Envelope = struct {

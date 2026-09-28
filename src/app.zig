@@ -1,25 +1,34 @@
 const std = @import("std");
+const linux = std.os.linux;
 const cli = @import("cli.zig");
 const aur = @import("aur.zig");
 const pacman = @import("pacman.zig");
 const process = @import("process.zig");
 const output = @import("output.zig");
 const diagnostics = @import("diagnostic.zig");
+const alpm = @import("alpm.zig").c;
+const transaction = @import("transaction.zig");
 
 const help =
-    \\zay 0.1.0 — repository and AUR search, info and dependency planning
+    \\zay 0.1.0 — pacman operations with AUR-aware search and safety checks
     \\Usage:
+    \\  zay -S <repo-package>...  Install repository packages via pacman
+    \\  zay -Syu                  Upgrade repositories via pacman
+    \\  zay -Rns <package>...     Remove packages via pacman
     \\  zay -Sp <package>...  Print a dependency plan without installing
     \\  zay -Ss <query>        Search repositories and AUR (one query)
     \\  zay -Si <package>...   Show info, preferring repository packages
-    \\  zay -Q[s|i|m] [args]   Read-only installed-package queries via pacman
+    \\  zay -Q...              Query installed packages via pacman
     \\  zay --help | --version
     \\
-    \\Long options: --sync, --query, --search, --info, --foreign.
+    \\Long options: --sync, --remove, --query, --search, --info, --foreign.
+    \\  --refresh --sysupgrade --recursive --nosave --cascade --unneeded
+    \\  --groups --list --needed --downloadonly
     \\  --noconfirm           Do not ask for confirmation
     \\  --print               Print a dependency plan (-S only)
-    \\Use -- to end options. Pacman search uses regex; AUR uses substrings.
-    \\Install, remove, refresh and upgrade operations are not implemented.
+    \\Use -- to end options. Official package transactions use pacman.
+    \\AUR packages are dependency-planned, revision-reviewed, then built as the user.
+    \\AUR updates block -Syu until combined AUR upgrades are supported.
     \\Exit: 0 success; 1 no match/not found; 2 usage or incomplete/failed lookup.
     \\Local queries preserve pacman's exit status (signals: 128 + signal).
     \\
@@ -31,11 +40,14 @@ const Context = struct {
     out: *std.Io.Writer,
     err: *std.Io.Writer,
     color: bool,
+    err_color: bool,
     noconfirm: bool = false,
     client: aur.Client,
+    environ: *const std.process.Environ.Map,
 
     fn diagnostic(self: *Context, comptime fmt: []const u8, args: anytype) !void {
-        try self.err.print("error: " ++ fmt ++ "\n", args);
+        try output.errorPrefix(self.err, self.err_color);
+        try self.err.print(fmt ++ "\n", args);
         try self.err.flush();
     }
     fn pacmanFailure(self: *Context, err: anyerror) !void {
@@ -185,6 +197,156 @@ const Context = struct {
         }
         return if (failed) 2 else if (not_found) 1 else 0;
     }
+
+    fn rawPacman(self: *Context, args: []const []const u8) !u8 {
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(self.a);
+        try argv.append(self.a, "pacman");
+        try argv.appendSlice(self.a, args);
+        return process.inherit(self.io, argv.items) catch |err| {
+            try self.pacmanFailure(err);
+            return 2;
+        };
+    }
+
+    fn privilegedPacman(self: *Context, args: []const []const u8) !u8 {
+        if (linux.geteuid() == 0) return self.rawPacman(args);
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(self.a);
+        try argv.append(self.a, "sudo");
+        try argv.append(self.a, "pacman");
+        try argv.appendSlice(self.a, args);
+        return process.inherit(self.io, argv.items) catch |failure| {
+            try self.diagnostic("sudo: {s}", .{switch (failure) {
+                error.FileNotFound => "not found; install/configure a privilege helper such as sudo",
+                error.AccessDenied => "permission denied",
+                else => diagnostics.message(failure),
+            }});
+            return 2;
+        };
+    }
+
+    fn repoNames(self: *Context) !?std.StringHashMap(void) {
+        const inventory = pacman.run(self.a, self.io, "-Slq", &.{}, false) catch |err| {
+            try self.pacmanFailure(err);
+            return null;
+        };
+        defer inventory.deinit();
+        if (inventory.code() != 0) {
+            try self.err.writeAll(inventory.stderr);
+            if (inventory.stderr.len == 0) try self.diagnostic("could not read repository databases; check pacman configuration", .{});
+            return null;
+        }
+        var names = std.StringHashMap(void).init(self.a);
+        errdefer names.deinit();
+        var lines = std.mem.tokenizeScalar(u8, inventory.stdout, '\n');
+        while (lines.next()) |name| {
+            if (!aur.validName(name)) return error.MalformedPacmanOutput;
+            try names.put(name, {});
+        }
+        return names;
+    }
+
+    /// Delegate repository targets to pacman; route AUR targets through zay's
+    /// dependency, review, build, and package-validation transaction.
+    fn syncInstall(self: *Context, cmd: cli.Command) !u8 {
+        // A custom pacman config/root/database changes which repositories and
+        // installed packages are in scope. Do not classify those using defaults.
+        if (cmd.custom_database) return self.privilegedPacman(cmd.raw_args.items);
+        if (cmd.operands.items.len == 0) return self.rawPacman(cmd.raw_args.items);
+        var names = try self.repoNames() orelse return 2;
+        defer names.deinit();
+        var aur_targets: std.ArrayList([]const u8) = .empty;
+        defer aur_targets.deinit(self.a);
+        var aur_found = false;
+        for (cmd.operands.items) |target| {
+            if (aur.validName(target) and !names.contains(target)) try aur_targets.append(self.a, target);
+        }
+        var start: usize = 0;
+        while (start < aur_targets.items.len) : (start += @min(50, aur_targets.items.len - start)) {
+            const batch = aur_targets.items[start..@min(start + 50, aur_targets.items.len)];
+            if (try self.queryAur(.info, batch)) |response| {
+                defer response.deinit();
+                for (batch) |target| for (0..response.count()) |i| {
+                    const package = response.get(i);
+                    if (!std.mem.eql(u8, package.name, target)) continue;
+                    aur_found = true;
+                };
+            } else return 2;
+        }
+        if (aur_found) {
+            if (!transaction.supportsOptions(cmd.raw_args.items)) {
+                try self.diagnostic("one or more pacman options are not supported for mixed AUR transactions", .{});
+                return 2;
+            }
+            return transaction.install(self.a, self.io, self.environ, &self.client, cmd.operands.items, cmd.noconfirm, self.color, self.err_color, self.out, self.err);
+        }
+        return self.privilegedPacman(cmd.raw_args.items);
+    }
+
+    /// Do not start a repository upgrade that would leave an outdated AUR
+    /// package behind. AUR versions use libalpm's Arch comparison semantics.
+    fn checkAurUpgrades(self: *Context) !bool {
+        const foreign = process.capture(self.a, self.io, &.{ "pacman", "-Qm" }) catch |err| {
+            try self.pacmanFailure(err);
+            return false;
+        };
+        defer foreign.deinit();
+        if (foreign.code() != 0) {
+            try self.err.writeAll(foreign.stderr);
+            if (foreign.stderr.len == 0) try self.diagnostic("could not inspect installed foreign packages", .{});
+            return false;
+        }
+        var installed = std.StringHashMap([]const u8).init(self.a);
+        defer installed.deinit();
+        var lines = std.mem.tokenizeScalar(u8, foreign.stdout, '\n');
+        while (lines.next()) |line| {
+            var fields = std.mem.tokenizeAny(u8, line, " \t\r");
+            const name = fields.next() orelse continue;
+            const version = fields.next() orelse return error.MalformedPacmanOutput;
+            if (!aur.validName(name) or !@import("package.zig").validVersion(version) or fields.next() != null)
+                return error.MalformedPacmanOutput;
+            try installed.put(name, version);
+        }
+        if (installed.count() == 0) return true;
+        var names = std.ArrayList([]const u8).empty;
+        defer names.deinit(self.a);
+        var iterator = installed.iterator();
+        while (iterator.next()) |entry| try names.append(self.a, entry.key_ptr.*);
+        var start: usize = 0;
+        while (start < names.items.len) : (start += @min(50, names.items.len - start)) {
+            const batch = names.items[start..@min(start + 50, names.items.len)];
+            const response = try self.queryAur(.info, batch) orelse return false;
+            defer response.deinit();
+            for (0..response.count()) |i| {
+                const remote = response.get(i);
+                const current = installed.get(remote.name) orelse continue;
+                const current_z = try self.a.dupeZ(u8, current);
+                defer self.a.free(current_z);
+                const remote_z = try self.a.dupeZ(u8, remote.version);
+                defer self.a.free(remote_z);
+                if (alpm.alpm_pkg_vercmp(current_z, remote_z) < 0) {
+                    try self.diagnostic("AUR update available for '{s}'; refusing a partial -Syu until safe AUR builds are supported", .{remote.name});
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    fn syncTransaction(self: *Context, cmd: cli.Command) !u8 {
+        if (cmd.sysupgrade) {
+            if (cmd.custom_database) {
+                try self.diagnostic("cannot verify AUR upgrades with custom pacman database options; refusing a partial -Syu", .{});
+                return 2;
+            }
+            if (!try self.checkAurUpgrades()) return 2;
+            return self.privilegedPacman(cmd.raw_args.items);
+        }
+        if (cmd.pacman_only) return self.rawPacman(cmd.raw_args.items);
+        if (cmd.operands.items.len == 0 or cmd.refresh) return self.privilegedPacman(cmd.raw_args.items);
+        return self.syncInstall(cmd);
+    }
 };
 
 pub fn run(init: std.process.Init) !u8 {
@@ -201,7 +363,9 @@ pub fn run(init: std.process.Init) !u8 {
         .out = &stdout.interface,
         .err = &stderr.interface,
         .color = init.environ_map.get("NO_COLOR") == null and (try std.Io.File.stdout().isTty(init.io)),
+        .err_color = init.environ_map.get("NO_COLOR") == null and (try std.Io.File.stderr().isTty(init.io)),
         .client = aur.Client.init(a, init.io),
+        .environ = init.environ_map,
     };
     defer ctx.client.deinit();
     var cmd = cli.parse(a, args[1..]) catch |err| {
@@ -221,19 +385,9 @@ pub fn run(init: std.process.Init) !u8 {
             try ctx.out.writeAll("zay 0.1.0\n");
             break :blk 0;
         },
-        .sync => if (cmd.search) try ctx.search(cmd.operands.items[0]) else if (cmd.info) try ctx.info(cmd.operands.items) else try @import("planner.zig").run(a, init.io, &ctx.client, cmd.operands.items, ctx.out, ctx.err),
-        .query => blk: {
-            var argv: std.ArrayList([]const u8) = .empty;
-            defer argv.deinit(a);
-            try argv.appendSlice(a, &.{ "pacman", if (cmd.search) "-Qs" else if (cmd.info) "-Qi" else if (cmd.foreign) "-Qm" else "-Q", "--color", if (ctx.color) "auto" else "never" });
-            if (cmd.noconfirm) try argv.append(a, "--noconfirm");
-            try argv.append(a, "--");
-            try argv.appendSlice(a, cmd.operands.items);
-            break :blk process.inherit(init.io, argv.items) catch |err| {
-                try ctx.pacmanFailure(err);
-                return 2;
-            };
-        },
+        .sync => if (cmd.search) try ctx.search(cmd.operands.items[0]) else if (cmd.info) try ctx.info(cmd.operands.items) else if (cmd.print) try @import("planner.zig").run(a, init.io, &ctx.client, cmd.operands.items, ctx.out, ctx.err) else try ctx.syncTransaction(cmd),
+        .remove => try ctx.privilegedPacman(cmd.raw_args.items),
+        .query => try ctx.rawPacman(cmd.raw_args.items),
     };
     try ctx.out.flush();
     try ctx.err.flush();

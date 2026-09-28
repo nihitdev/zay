@@ -83,8 +83,6 @@ cmp "$scratch/out" "$scratch/expected"
 [ ! -s "$scratch/err" ]
 check 0 -S --print virtual
  grep -q 'fixture/provider 3-1' "$scratch/out"
-check 2 -S app --noconfirm
-grep -q 'use -Sp' "$scratch/err"
 check 2 -Sp 'app>=2'
 grep -q 'required version is unavailable' "$scratch/err"
 check 2 -Sp ignored

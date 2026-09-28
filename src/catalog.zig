@@ -209,7 +209,7 @@ fn span(ptr: [*c]const u8) []const u8 {
     return if (ptr == null) "" else std.mem.span(ptr);
 }
 fn fromAur(p: @import("package.zig").Package) Record {
-    return .{ .name = p.name, .version = p.version, .base = p.base, .source = .aur, .repository = "aur", .depends = p.depends, .make_depends = p.make_depends, .check_depends = p.check_depends, .provides = p.provides, .conflicts = p.conflicts, .replaces = p.replaces };
+    return .{ .name = p.name, .version = p.version, .base = p.base, .source = .aur, .repository = "aur", .depends = p.depends, .make_depends = p.make_depends, .check_depends = p.check_depends, .opt_depends = p.opt_depends, .provides = p.provides, .conflicts = p.conflicts, .replaces = p.replaces };
 }
 
 test "resolved pacman configuration preserves priority and install usage" {

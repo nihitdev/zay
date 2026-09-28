@@ -1,7 +1,46 @@
 const std = @import("std");
 const Package = @import("package.zig").Package;
+pub const Style = enum { info, warning, err, package, heading };
+
+pub fn styled(w: *std.Io.Writer, enabled: bool, style: Style, value: []const u8) !void {
+    if (enabled) try w.writeAll(switch (style) {
+        .info => "\x1b[1;36m",
+        .warning => "\x1b[1;33m",
+        .err => "\x1b[1;31m",
+        .package => "\x1b[1m",
+        .heading => "\x1b[1;35m",
+    });
+    try w.writeAll(value);
+    if (enabled) try w.writeAll("\x1b[0m");
+}
+
+pub fn infoPrefix(w: *std.Io.Writer, enabled: bool) !void {
+    try styled(w, enabled, .info, "::");
+    try w.writeByte(' ');
+}
+
+pub fn warningPrefix(w: *std.Io.Writer, enabled: bool) !void {
+    try styled(w, enabled, .warning, "warning:");
+    try w.writeByte(' ');
+}
+
+pub fn errorPrefix(w: *std.Io.Writer, enabled: bool) !void {
+    try styled(w, enabled, .err, "error:");
+    try w.writeByte(' ');
+}
+
 /// AUR metadata is untrusted terminal content. Escape controls, including ESC.
 pub fn safe(w: *std.Io.Writer, value: []const u8) !void {
+    return safeImpl(w, value, false);
+}
+
+/// Preserve line structure for source files shown during the required AUR
+/// review while still escaping terminal controls supplied by the repository.
+pub fn safeMultiline(w: *std.Io.Writer, value: []const u8) !void {
+    return safeImpl(w, value, true);
+}
+
+fn safeImpl(w: *std.Io.Writer, value: []const u8, multiline: bool) !void {
     var i: usize = 0;
     while (i < value.len) {
         const len = std.unicode.utf8ByteSequenceLength(value[i]) catch {
@@ -19,7 +58,11 @@ pub fn safe(w: *std.Io.Writer, value: []const u8) !void {
             i += 1;
             continue;
         };
-        if (c < 32 or (c >= 127 and c <= 159)) try w.writeByte('?') else try w.writeAll(bytes);
+        if (multiline and (c == '\n' or c == '\t')) {
+            try w.writeAll(bytes);
+        } else if (c < 32 or (c >= 127 and c <= 159)) {
+            try w.writeByte('?');
+        } else try w.writeAll(bytes);
         i += len;
     }
 }
@@ -71,6 +114,24 @@ test "terminal control sanitization" {
     var w = std.Io.Writer.fixed(&buffer);
     try safe(&w, "hello\x1b[31m\nworld 日本語 é\u{009b}\xff");
     try std.testing.expectEqualStrings("hello?[31m?world 日本語 é??", w.buffered());
+}
+
+test "multiline review text keeps layout but escapes terminal controls" {
+    var buffer: [100]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buffer);
+    try safeMultiline(&w, "pkgname=demo\n\tvalue\x1b[31m\rend");
+    try std.testing.expectEqualStrings("pkgname=demo\n\tvalue?[31m?end", w.buffered());
+}
+
+test "style helpers emit no escapes when color is disabled" {
+    var buffer: [128]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buffer);
+    try infoPrefix(&w, false);
+    try styled(&w, false, .package, "hello 2.12.1-2");
+    try w.writeByte(' ');
+    try errorPrefix(&w, false);
+    try w.writeAll("failed\n");
+    try std.testing.expectEqualStrings(":: hello 2.12.1-2 error: failed\n", w.buffered());
 }
 
 test "search output is compact and adds no escapes without color" {

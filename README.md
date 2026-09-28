@@ -32,13 +32,34 @@ must fail safely and explain how to review them.
 - `zay -Si <package>...` prefers packages in the configured repositories. Missing
   names are queried through batched AUR info requests. Every info block identifies
   its repository. Repeated targets are shown once.
-- `zay -Q`, `-Qs`, `-Qi`, and `-Qm` delegate read-only local queries to pacman.
+- zay -Q... delegates pacman query operations using the original argument
+  vector, preserving pacman query flags and exit status.
+- `zay -S <package>...` installs repository packages through pacman and resolves
+  AUR targets through the dependency planner. It fetches package-base Git data,
+  validates pinned `.SRCINFO` against RPC metadata, displays first-seen or
+  changed build-file review material, and requires approval for that exact
+  commit before building. Builds run as the invoking user; package artifacts
+  are checked with pacman and installed through `sudo pacman -U`.
+- zay -R... delegates removals such as -Rns directly to pacman.
+- zay -Syu checks installed foreign packages against AUR RPC versions before
+  starting pacman. If an AUR package is outdated, zay refuses the partial
+  upgrade. When no AUR version update is found, repository upgrade work is delegated.
 - `--help`, `--version`, combined/separate short flags, `--`, and the long options
-  `--sync`, `--query`, `--search`, `--info`, `--foreign`, `--print`, and `--noconfirm`.
-- Strict rejection of unsupported flags and combinations. No package-changing
-  commands are enabled.
+  `--sync`, `--remove`, `--query`, `--search`, `--info`, `--foreign`,
+  `--refresh`, `--sysupgrade`, `--recursive`, `--nosave`, `--print`, and
+  `--noconfirm`.
+- Unsupported flags and combinations fail explicitly. Pacman remains
+  responsible for transaction prompts and exit statuses for delegated
+  operations; --noconfirm is passed through unchanged.
 - Native HTTPS with certificate verification, status validation, an 8 MiB AUR
   body limit, encoded URL components, API error handling, and owned JSON data.
+- Local Git acquisition primitives distinguish the local HEAD revision from a
+  fetched upstream revision, reject dirty/mismatched repositories, and offer a
+  no-checkout path for AUR cache repositories.
+- A data-only .SRCINFO parser handles split packages, base/package scopes,
+  repeated and architecture-qualified metadata, epoch versions, and resolver
+  records. A pinned-revision loader checks package-base, package-name, version,
+  and dependency/relationship metadata against the RPC snapshot.
 - AUR terminal controls are sanitized. AUR search headings use color only on a
   terminal without `NO_COLOR`; redirected output contains no added ANSI escapes.
 - Search shows package names, versions, descriptions and relevant status flags;
@@ -49,8 +70,8 @@ must fail safely and explain how to review them.
 
 Requires Arch Linux, Zig **0.16.0**, pacman (including libalpm headers/library and
 pacman-conf), configured local sync databases, and system CA certificates.
-The executable links to system libalpm and libc. Git/makepkg are not needed by the current read-only
-commands. No Zig package dependencies are fetched.
+The executable links to system libalpm and libc. Runtime AUR builds require
+`git`, `bsdtar`, `makepkg`, and `sudo`. No Zig package dependencies are fetched.
 
 ```sh
 zig build
@@ -70,8 +91,8 @@ It does not install anything into the host package database.
 Unit tests cover parsing, malformed invocations, RPC envelopes/errors/nulls,
 URL escaping, response/request limits, allocation failures, terminal text,
 repository name extraction, and safe subprocess arguments/statuses. Offline CLI
-integration tests use a temporary fake pacman, testing delegation, deduplication,
-signals, missing executables, permission errors, and database failures. They never
+integration tests use a temporary fake pacman, testing transaction delegation,
+query forwarding, signals, missing executables, permission errors, and database failures. They never
 install/remove packages, execute PKGBUILDs, or access the AUR. They require normal
 Arch coreutils and `/bin/sh`. Live queries are deliberately separate from tests.
 Planner unit tests additionally cover Arch version comparisons, versioned
@@ -79,6 +100,9 @@ providers, repository preference, dependency kinds, split package bases, cycles,
 conflicts, replacements, reverse dependencies, and graph allocation failures.
 `test-planner` uses synthetic local/sync databases and requires `bsdtar`. It checks
 that no pacman, sudo, git, or makepkg process is launched by the planner.
+Git acquisition, .SRCINFO parsing, review-state, and build-preparation tests use
+local temporary repositories. They do not contact the network, run makepkg,
+execute PKGBUILDs, or modify the host package database.
 
 ## Dependency planning
 
@@ -87,8 +111,13 @@ the AUR package bases in deterministic build order and their selected outputs.
 It does not print pacman's download URLs. It never downloads build files, opens
 a package transaction, refreshes databases, asks for confirmation, or installs
 anything. Exit status is **0** for a complete metadata plan, **2** for failure.
-Bare `-S` still fails with an instruction to use `-Sp`; successful planning is not
-reported as successful installation.
+Official repository targets are installed through pacman. AUR package bases are
+built in graph order after metadata checks and review of each first-seen or
+changed build revision. Approval is stored by package base and immutable commit
+ID; `--noconfirm` cannot approve a changed revision. zay refuses to build AUR
+packages when started as root. `-Syu` still refuses when it detects a newer AUR
+package; combined AUR upgrades and source-only update detection are not yet
+implemented.
 
 The planner uses pacman-conf's resolved RootDir, DBPath, repository order, Usage,
 IgnorePkg, and IgnoreGroup. It reads cached databases through libalpm and uses
@@ -153,8 +182,15 @@ The resolver is deliberately conservative, not complete:
   request deadline or retry policy; stalled connections use underlying OS/network
   timeouts. Redirects and compressed responses are rejected rather than followed
   or expanded implicitly.
-- This is a subset of pacman's CLI. Bare `-S`, `-R`, `-Syu`, refresh, and
-  other unsupported operations fail without changing the host.
+- This remains a subset of pacman's CLI. Mixed AUR transactions currently
+  support basic `-S` targets and `--noconfirm`; other pacman options are rejected
+  rather than silently ignored. Custom pacman database/root settings are not
+  integrated with AUR planning. Refresh, group, list, and query modes that zay
+  does not combine with AUR behavior are delegated where recognized.
+- AUR installation has not been exercised against a real package because that
+  would execute third-party build code and mutate the host. Tests verify the
+  components with inert local repositories and do not certify arbitrary AUR
+  package behavior.
 
 ## Architecture
 
@@ -163,7 +199,7 @@ The resolver is deliberately conservative, not complete:
 - `cli.zig`: operation/option/operand parser and validation.
 - `process.zig`: explicit argv subprocesses, bounded capture, inherited I/O,
   termination status and ownership.
-- `pacman.zig`: read-only repository calls and search-name extraction.
+- `pacman.zig`: explicit-argv pacman calls and search-name extraction.
 - `aur.zig`: RPC transport, encoding, envelope validation and owned responses.
 - `package.zig`: transport-independent, borrowed package metadata.
 - `output.zig`: AUR formatting and terminal sanitization.
@@ -174,6 +210,17 @@ The resolver is deliberately conservative, not complete:
 - `dependency.zig`: dependency/provision syntax and Arch version constraints.
 - `resolver.zig`: graph construction, safety checks, and build ordering.
 - `planner.zig`: plan output and resolution diagnostics.
+- `cache.zig`: XDG-derived repository, build, package, and review-state paths.
+- `git.zig`: explicit-argv clone/fetch, origin and worktree checks, and separate
+  local/upstream revision identities.
+- `aur_repo.zig`: validated AUR package-base URLs, cache acquisition, pinned
+  .SRCINFO loading, and RPC metadata reconciliation.
+- `srcinfo.zig`: non-evaluating .SRCINFO parsing and split-package resolver
+  records.
+- `review.zig`: exact-commit review state, atomically stored per package base.
+- `builder.zig`: pinned source preparation, non-root makepkg execution, and
+  artifact path/identity validation.
+- `transaction.zig`: AUR planning, review, build ordering, and pacman handoff.
 
 Arguments and proxy configuration live for the command's lifetime. Each process
 result and parsed RPC response owns its allocations and has explicit cleanup.
@@ -184,9 +231,6 @@ outlive the graph's borrowed records.
 
 ## Planned
 
-Next: user-owned XDG git/build caches, fetching package bases, concise review of
-PKGBUILD and related files/diffs, and full `.SRCINFO` reconciliation with the plan.
-Then add explicit operation approval, normal-user makepkg builds, split-package
-artifact discovery, and narrowly elevated pacman installation. AUR code is
-untrusted and must never execute as root. Combined repository/AUR upgrades follow
-only after the installation pipeline is reliable.
+Combined `-Syu` AUR upgrades, source-only AUR update detection, additional
+pacman option compatibility for mixed transactions, and broader offline tests
+remain planned. AUR code is untrusted and must never execute as root.

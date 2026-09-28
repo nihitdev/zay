@@ -12,6 +12,7 @@ pub const Record = struct {
     depends: []const []const u8 = &.{},
     make_depends: []const []const u8 = &.{},
     check_depends: []const []const u8 = &.{},
+    opt_depends: []const []const u8 = &.{},
     provides: []const []const u8 = &.{},
     conflicts: []const []const u8 = &.{},
     replaces: []const []const u8 = &.{},

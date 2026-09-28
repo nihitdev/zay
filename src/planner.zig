@@ -70,7 +70,7 @@ pub fn run(a: std.mem.Allocator, io: std.Io, client: *aur.Client, targets: []con
     return 0;
 }
 
-fn report(w: *std.Io.Writer, failure: anyerror, problem: []const u8, related: []const u8, client: *aur.Client, detail: []const u8) !void {
+pub fn report(w: *std.Io.Writer, failure: anyerror, problem: []const u8, related: []const u8, client: *aur.Client, detail: []const u8) !void {
     try w.writeAll("error: ");
     if (problem.len != 0) {
         try output.safe(w, problem);

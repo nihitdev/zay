@@ -18,13 +18,21 @@ case "$ZAY_TEST_MODE" in
   inventory_error) printf 'database unreadable\n' >&2; exit 1 ;;
 esac
 case "$1" in
+  -Qm) exit 0 ;;
   -Slq) printf 'firefox\n' ;;
   -Si) printf 'Repository      : extra\nName            : firefox\n' ;;
+  -S|-S*) exit 0 ;;
+  -R*|--remove) exit 0 ;;
   -Q*) printf 'local query\n' ;;
   *) exit 99 ;;
 esac
 MOCK
 chmod +x "$scratch/bin/pacman"
+cat > "$scratch/bin/sudo" <<'MOCK'
+#!/bin/sh
+exec "$@"
+MOCK
+chmod +x "$scratch/bin/sudo"
 check() {
   expected=$1
   shift
@@ -39,23 +47,37 @@ check() {
 check 0 --help
 check 0 --version
 check 2 -Ss
-check 2 -Syu
-check 2 -Rns firefox
+check 0 -Syu
+printf '%s\n' '-Syu' > "$scratch/expected"
+cmp "$scratch/expected" "$scratch/args"
+check 0 -Rns firefox
+printf '%s\n' '-Rns' 'firefox' > "$scratch/expected"
+cmp "$scratch/expected" "$scratch/args"
 check 2 -Ss one two
 check 0 -Qi -- '$(false); a b'
-printf '%s\n' '-Qi' '--color' 'never' '--' '$(false); a b' > "$scratch/expected"
+printf '%s\n' '-Qi' '--' '$(false); a b' > "$scratch/expected"
 cmp "$scratch/expected" "$scratch/args"
 check 0 -Qi --noconfirm pacman
-printf '%s\n' '-Qi' '--color' 'never' '--noconfirm' '--' 'pacman' > "$scratch/expected"
+printf '%s\n' '-Qi' '--noconfirm' 'pacman' > "$scratch/expected"
 cmp "$scratch/expected" "$scratch/args"
 printf 'local query\n' > "$scratch/expected"
 cmp "$scratch/expected" "$scratch/out"
 [ ! -s "$scratch/err" ]
 check 0 -Q -- --noconfirm
-printf '%s\n' '-Q' '--color' 'never' '--' '--noconfirm' > "$scratch/expected"
+printf '%s\n' '-Q' '--' '--noconfirm' > "$scratch/expected"
 cmp "$scratch/expected" "$scratch/args"
-check 2 -S --noconfirm firefox
-check 2 -R --noconfirm firefox
+check 0 -S --noconfirm firefox
+printf '%s\n' '-S' '--noconfirm' 'firefox' > "$scratch/expected"
+cmp "$scratch/expected" "$scratch/args"
+check 0 -Sg base
+printf '%s\n' '-Sg' 'base' > "$scratch/expected"
+cmp "$scratch/expected" "$scratch/args"
+check 0 -R --noconfirm firefox
+printf '%s\n' '-R' '--noconfirm' 'firefox' > "$scratch/expected"
+cmp "$scratch/expected" "$scratch/args"
+check 0 --remove --recursive --nosave firefox
+printf '%s\n' '--remove' '--recursive' '--nosave' 'firefox' > "$scratch/expected"
+cmp "$scratch/expected" "$scratch/args"
 check 0 -Si firefox firefox
 [ "$(grep -c '^Name ' "$scratch/out")" = 1 ]
 grep -q '^Repository *: extra' "$scratch/out"

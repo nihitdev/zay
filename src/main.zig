@@ -17,5 +17,12 @@ test {
     _ = @import("dependency.zig");
     _ = @import("resolver.zig");
     _ = @import("catalog.zig");
+    _ = @import("cache.zig");
+    _ = @import("git.zig");
+    _ = @import("srcinfo.zig");
+    _ = @import("aur_repo.zig");
+    _ = @import("review.zig");
+    _ = @import("builder.zig");
+    _ = @import("transaction.zig");
     _ = @import("resolver_test.zig");
 }

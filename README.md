@@ -1,91 +1,133 @@
-# zay
+<div align="center">
+  <img src="website/public/favicon.svg" width="88" height="88" alt="zay logo">
+  <h1>zay</h1>
+  <p><strong>Pacman with native AUR awareness.</strong></p>
+  <p>A small, native-feeling AUR helper for Arch Linux, written in Zig.</p>
 
-**Pacman with native AUR awareness.** zay is an Arch Linux package helper
-written in Zig. It sends official repository operations to pacman and uses the
-AUR RPC, Git, `.SRCINFO`, and makepkg for AUR packages. It does not wrap yay,
-paru, or another AUR helper.
+  <a href="https://aur.archlinux.org/packages/zay-git"><img alt="AUR version" src="https://img.shields.io/aur/version/zay-git?style=for-the-badge&logo=archlinux&logoColor=white"></a>
+  <a href="https://aur.archlinux.org/packages/zay-git"><img alt="AUR votes" src="https://img.shields.io/aur/votes/zay-git?style=for-the-badge&logo=archlinux&logoColor=white"></a>
+  <a href="LICENSE"><img alt="License GPL-3.0-or-later" src="https://img.shields.io/github/license/nihitdev/zay?style=for-the-badge"></a>
+  <a href="https://ziglang.org/"><img alt="Zig 0.16.0" src="https://img.shields.io/badge/Zig-0.16.0-f7a41d?style=for-the-badge&logo=zig&logoColor=white"></a>
+  <a href="https://github.com/nihitdev/zay/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/nihitdev/zay?style=for-the-badge&logo=github"></a>
+  <a href="https://github.com/nihitdev/zay/commits/main/"><img alt="Last commit" src="https://img.shields.io/github/last-commit/nihitdev/zay?style=for-the-badge"></a>
+
+  <p>
+    <a href="#install">Install</a> ·
+    <a href="#commands">Commands</a> ·
+    <a href="#security">AUR safety</a> ·
+    <a href="#development">Development</a>
+  </p>
+</div>
+
+---
+
+zay combines pacman-style commands with its own AUR support. Official repository
+operations stay with pacman; zay handles AUR search, dependency planning, source
+review, and builds. It does not wrap yay, paru, or another AUR helper.
 
 ## Install
 
-Build with Zig 0.16.0 on Arch Linux:
+### From the AUR
+
+The `zay-git` package is published on the [AUR](https://aur.archlinux.org/packages/zay-git).
+On Arch Linux, install Git and the standard package build tools, then clone and
+build the AUR package as a normal user:
 
 ```sh
-zig build
+sudo pacman -S --needed base-devel git
+
+git clone https://aur.archlinux.org/zay-git.git
+cd zay-git
+
+# Read the build instructions before executing them.
+less PKGBUILD
+less .SRCINFO
+
+makepkg -si
 ```
 
-The executable is `zig-out/bin/zay`. To make it available system-wide:
+`makepkg -si` resolves the package's Zig build dependency and asks pacman to
+install the finished package. **Do not run makepkg as root.** Check the current
+[PKGBUILD and package metadata](https://aur.archlinux.org/packages/zay-git)
+before each build; AUR build instructions are executable code.
+
+After installation, verify zay is available:
+
+```sh
+zay --version
+```
+
+### Build from the upstream source
+
+For development or to build directly from GitHub, use Zig 0.16.0 and the system
+pacman/libalpm development files:
+
+```sh
+git clone https://github.com/nihitdev/zay.git
+cd zay
+zig build
+./zig-out/bin/zay --version
+```
+
+To install that build system-wide:
 
 ```sh
 sudo install -Dm755 zig-out/bin/zay /usr/local/bin/zay
 ```
 
-The build links to the system libalpm. AUR builds also need pacman, Git,
-makepkg, bsdtar, and sudo. Run zay as your normal user; it only uses privilege
-elevation for pacman operations that need it.
+## Commands
 
-## Use
+| Command | What it does |
+| --- | --- |
+| `zay -Ss query` | Search configured repository databases and the AUR |
+| `zay -Si package` | Show repository or AUR package information |
+| `zay -Sp package` | Resolve dependencies and print a plan without installing |
+| `zay -S package` | Install a repository package or review/build an AUR package |
+| `zay -Rns package` | Delegate package removal to pacman |
+| `zay -Qm` | List installed foreign packages |
+| `zay -Syu` | Check for AUR updates and refuse an unsafe partial upgrade |
 
-```sh
-zay -Ss firefox                 # Search repositories and AUR
-zay -Si firefox                 # Show package information
-zay -Sp firefox                 # Print a dependency plan; install nothing
-zay -S firefox                  # Install a repository package
-zay -S visual-studio-code-bin   # Review and install an AUR package
-zay -Qm                          # List installed foreign packages
-zay -Rns package                 # Delegate removal to pacman
-zay -Syu                         # Upgrade only when an AUR partial upgrade is safe
-```
+zay uses the local pacman sync databases for repository search and planning; it
+does not refresh them automatically. Use pacman to refresh databases when
+needed. zay supports a practical subset of pacman's CLI, not every operation or
+option. Unsupported combinations fail clearly.
 
-zay follows pacman operation syntax where supported. Repository search results
-come from the configured local sync databases; zay does not refresh them
-automatically. Use pacman's normal refresh command when needed.
+### AUR-aware install
+
+For an AUR target, zay resolves dependencies, fetches the package base, checks
+pinned `.SRCINFO` against AUR metadata, and presents new or changed build files
+for review. After approval, zay builds as the invoking user, validates the
+resulting package identities and versions, and hands selected packages to
+pacman. Official packages continue to use pacman directly.
+
+### Upgrades
+
+`-Syu` checks installed foreign packages against AUR versions before it starts
+the official repository upgrade. If an installed AUR package is outdated, zay
+stops instead of leaving the system in a partial-upgrade state. Combined
+repository and AUR upgrades are not implemented yet.
 
 ## AUR safety
 
-AUR build files are executable code from package maintainers. On first use and
-whenever the reviewed revision changes, zay identifies the untrusted files and
-shows their contents or diff before asking to proceed. Approval is tied to the
-exact Git commit. `--noconfirm` can skip the ordinary transaction confirmation,
-but it never approves new or changed build files. If interactive review is
-unavailable, zay stops safely.
+AUR packages are community build recipes, not reviewed binaries. PKGBUILDs and
+related build files can execute arbitrary shell code.
 
-AUR sources are built as the invoking user, never as root. zay checks pinned
-`.SRCINFO` against AUR metadata, validates generated package identities and
-versions, then passes selected artifacts to pacman. Split/debug artifacts are
-validated too; only packages selected for the transaction are installed.
-Official package operations and package removals are delegated to pacman.
+- zay shows first-seen or changed build files and ties approval to the exact Git
+  commit being built.
+- `--noconfirm` does not approve new or changed build files.
+- makepkg and package functions run as the normal user, never as root.
+- Only pacman operations that need elevated privileges are run with elevation.
+- Package artifacts are checked before zay passes them to pacman.
 
-`-Syu` checks installed foreign package versions before starting the pacman
-upgrade. If an AUR package is outdated, zay refuses to start a partial upgrade.
-Combined repository and AUR upgrades are not implemented yet.
+Review is a chance to inspect build instructions; it is not a sandbox. AUR
+build code can access files and services available to your user. See
+[SECURITY.md](SECURITY.md) for reporting and project security boundaries.
 
-## Output
+## Development
 
-zay keeps its own messages compact and pacman-like. On an interactive terminal,
-informational markers, package names, versions, headings, warnings, and errors
-use restrained color. Colors are disabled when `NO_COLOR` is set or output is
-redirected. Pacman and makepkg output is passed through unchanged.
-
-## What works
-
-- `-Ss query`: search configured repository databases and the AUR.
-- `-Si package...`: show repository or AUR package information.
-- `-Sp package...`: resolve and print a dependency/build plan without changing
-  the system.
-- `-S package...`: install repository packages with pacman; acquire, review,
-  build, validate, and install AUR packages.
-- `-R...` and `-Q...`: delegate supported pacman remove/query operations.
-- `-Syu`: block an unsafe partial upgrade when an installed AUR package has a
-  newer AUR version; full AUR upgrades remain planned.
-- `--help`, `--version`, `--noconfirm`, combined short flags, and common
-  long-form operation options.
-
-This is an actively developed Arch-specific tool, not a claim of complete
-pacman compatibility. Unsupported options fail clearly. Mixed AUR transactions
-currently accept basic package targets and `--noconfirm`; pacman-specific
-options are not silently discarded.
-
-## Development and tests
+Requirements: Arch Linux, Zig 0.16.0, pacman/libalpm development files, and
+standard build tools. AUR transaction code additionally uses Git, makepkg,
+bsdtar, and a privilege helper for pacman installation.
 
 ```sh
 zig build
@@ -93,31 +135,20 @@ zig build test
 zig build test -Doptimize=ReleaseSafe
 zig build test-integration
 zig build test-planner
-zig build run -- -Ss firefox
+scripts/check.sh
 ```
 
-Unit tests cover CLI parsing, AUR responses, dependency planning, Git/cache
-handling, `.SRCINFO`, review state, artifact validation, and transaction
-bookkeeping. Offline integration tests use temporary data and a fake pacman;
-they do not install/remove packages, execute PKGBUILDs, or contact the AUR.
-Live searches and AUR builds are separate from the test suite.
+Tests use temporary directories, synthetic package databases, local Git
+repositories, and fake subprocesses. They do not access the network, execute
+PKGBUILDs, or install/remove host packages.
 
-## Current limits
+## Project links
 
-- Combined AUR upgrades for `-Syu` are not implemented.
-- The CLI supports a useful pacman subset, not every pacman option or mode.
-- Repository data comes from the local pacman databases; zay does not refresh
-  them for search, info, or planning.
-- AUR builds execute upstream package scripts as the normal user after explicit
-  review. Review reduces surprises; it does not sandbox those scripts.
-- Use pacman directly for behavior zay does not yet support.
-
-## Project layout
-
-The implementation is split by responsibility: `cli.zig` parses operations,
-`app.zig` routes commands, `catalog.zig` and `resolver.zig` plan dependencies,
-`aur.zig` speaks AUR RPC, `srcinfo.zig` parses build metadata,
-`aur_repo.zig` and `git.zig` acquire pinned sources, `review.zig` tracks
-approved revisions, `builder.zig` prepares and validates builds, and
-`transaction.zig` coordinates AUR installation. Official package management
-is delegated through `pacman.zig` and the shared process layer.
+- [AUR package](https://aur.archlinux.org/packages/zay-git)
+- [Source code](https://github.com/nihitdev/zay)
+- [Website](https://get-zay.vercel.app/)
+- [Changelog](CHANGELOG.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [Security policy](SECURITY.md)
+- [GPL-3.0-or-later license](LICENSE)

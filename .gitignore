@@ -6,3 +6,7 @@ zig-out/
 *.swp
 *.tmp
 .DS_Store
+
+# Website dependencies and build output
+website/node_modules/
+website/dist/

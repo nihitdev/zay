@@ -1,6 +1,6 @@
 const std = @import("std");
 const Package = @import("package.zig").Package;
-pub const Style = enum { info, warning, err, package, heading };
+pub const Style = enum { info, warning, err, package, version, heading };
 
 pub fn styled(w: *std.Io.Writer, enabled: bool, style: Style, value: []const u8) !void {
     if (enabled) try w.writeAll(switch (style) {
@@ -8,6 +8,7 @@ pub fn styled(w: *std.Io.Writer, enabled: bool, style: Style, value: []const u8)
         .warning => "\x1b[1;33m",
         .err => "\x1b[1;31m",
         .package => "\x1b[1m",
+        .version => "\x1b[1;32m",
         .heading => "\x1b[1;35m",
     });
     try w.writeAll(value);
@@ -67,25 +68,33 @@ fn safeImpl(w: *std.Io.Writer, value: []const u8, multiline: bool) !void {
     }
 }
 pub fn search(w: *std.Io.Writer, p: Package, color: bool) !void {
-    if (color) try w.writeAll("\x1b[1;35m");
-    try w.writeAll("aur/");
-    try safe(w, p.name);
-    if (color) try w.writeAll("\x1b[0m");
+    try styled(w, color, .heading, "aur/");
+    try styled(w, color, .package, p.name);
     try w.writeByte(' ');
-    try safe(w, p.version);
-    if (p.maintainer == null) try w.writeAll(" [orphaned]");
-    if (p.out_of_date != null) try w.writeAll(" [out-of-date]");
+    try styled(w, color, .version, p.version);
+    if (p.maintainer == null) {
+        try w.writeByte(' ');
+        try styled(w, color, .warning, "[orphaned]");
+    }
+    if (p.out_of_date != null) {
+        try w.writeByte(' ');
+        try styled(w, color, .warning, "[out-of-date]");
+    }
     try w.writeAll("\n    ");
     try safe(w, p.description orelse "(no description)");
     try w.writeByte('\n');
 }
-fn field(w: *std.Io.Writer, label: []const u8, value: []const u8) !void {
-    try w.print("{s: <16}: ", .{label});
-    try safe(w, value);
+fn field(w: *std.Io.Writer, color: bool, label: []const u8, value: []const u8, value_style: Style) !void {
+    try styled(w, color, .info, label);
+    for (label.len..16) |_| try w.writeByte(' ');
+    try w.writeAll(": ");
+    try styled(w, color, value_style, value);
     try w.writeByte('\n');
 }
-fn list(w: *std.Io.Writer, label: []const u8, values: []const []const u8) !void {
-    try w.print("{s: <16}: ", .{label});
+fn list(w: *std.Io.Writer, color: bool, label: []const u8, values: []const []const u8) !void {
+    try styled(w, color, .info, label);
+    for (label.len..16) |_| try w.writeByte(' ');
+    try w.writeAll(": ");
     if (values.len == 0) try w.writeAll("None");
     for (values, 0..) |value, i| {
         if (i != 0) try w.writeAll("  ");
@@ -93,20 +102,20 @@ fn list(w: *std.Io.Writer, label: []const u8, values: []const []const u8) !void 
     }
     try w.writeByte('\n');
 }
-pub fn info(w: *std.Io.Writer, p: Package) !void {
-    try field(w, "Repository", "aur");
-    try field(w, "Name", p.name);
-    try field(w, "Package Base", p.base);
-    try field(w, "Version", p.version);
-    try field(w, "Description", p.description orelse "None");
-    try field(w, "URL", p.url orelse "None");
-    try field(w, "Maintainer", p.maintainer orelse "None (orphaned)");
-    try list(w, "Depends On", p.depends);
-    try list(w, "Make Depends", p.make_depends);
-    try list(w, "Check Depends", p.check_depends);
-    try list(w, "Provides", p.provides);
+pub fn info(w: *std.Io.Writer, p: Package, color: bool) !void {
+    try field(w, color, "Repository", "aur", .heading);
+    try field(w, color, "Name", p.name, .package);
+    try field(w, color, "Package Base", p.base, .package);
+    try field(w, color, "Version", p.version, .version);
+    try field(w, color, "Description", p.description orelse "None", .info);
+    try field(w, color, "URL", p.url orelse "None", .info);
+    try field(w, color, "Maintainer", p.maintainer orelse "None (orphaned)", .info);
+    try list(w, color, "Depends On", p.depends);
+    try list(w, color, "Make Depends", p.make_depends);
+    try list(w, color, "Check Depends", p.check_depends);
+    try list(w, color, "Provides", p.provides);
     try w.print("Votes           : {d}\nPopularity      : {d:.2}\n", .{ p.votes, p.popularity });
-    try field(w, "Out Of Date", if (p.out_of_date != null) "Yes" else "No");
+    try field(w, color, "Out Of Date", if (p.out_of_date != null) "Yes" else "No", if (p.out_of_date != null) .warning else .info);
     try w.writeByte('\n');
 }
 test "terminal control sanitization" {
@@ -132,6 +141,16 @@ test "style helpers emit no escapes when color is disabled" {
     try errorPrefix(&w, false);
     try w.writeAll("failed\n");
     try std.testing.expectEqualStrings(":: hello 2.12.1-2 error: failed\n", w.buffered());
+}
+
+test "style helpers distinguish versions and headings when color is enabled" {
+    var buffer: [128]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buffer);
+    try styled(&w, true, .heading, "aur/");
+    try styled(&w, true, .package, "sample");
+    try w.writeByte(' ');
+    try styled(&w, true, .version, "1.2-1");
+    try std.testing.expectEqualStrings("\x1b[1;35maur/\x1b[0m\x1b[1msample\x1b[0m \x1b[1;32m1.2-1\x1b[0m", w.buffered());
 }
 
 test "search output is compact and adds no escapes without color" {

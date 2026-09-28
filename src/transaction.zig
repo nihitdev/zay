@@ -39,13 +39,13 @@ pub fn install(a: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     var host = catalog.Host.init(a, client);
     defer host.deinit();
     host.load(io) catch |failure| {
-        try @import("planner.zig").report(err, failure, "", "", client, host.detail);
+        try @import("planner.zig").report(err, failure, "", "", client, host.detail, err_color);
         return 2;
     };
     var graph: resolver.Graph = .{ .a = a, .catalog = host.view() };
     defer graph.deinit();
     graph.plan(targets) catch |failure| {
-        try @import("planner.zig").report(err, failure, graph.problem, graph.related, client, host.detail);
+        try @import("planner.zig").report(err, failure, graph.problem, graph.related, client, host.detail, err_color);
         return 2;
     };
     if (graph.order.items.len == 0) return pacmanInstall(a, io, graph.nodes.items, noconfirm, false, err);

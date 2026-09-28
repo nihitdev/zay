@@ -1,2 +1,8 @@
+# Zig build output
 .zig-cache/
 zig-out/
+
+# Editor and temporary files
+*.swp
+*.tmp
+.DS_Store

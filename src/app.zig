@@ -183,7 +183,7 @@ const Context = struct {
                     for (0..response.count()) |i| {
                         const p = response.get(i);
                         if (std.mem.eql(u8, target, p.name)) {
-                            try output.info(self.out, p);
+                            try output.info(self.out, p, self.color);
                             matched = true;
                             break;
                         }
@@ -385,7 +385,7 @@ pub fn run(init: std.process.Init) !u8 {
             try ctx.out.writeAll("zay 0.1.0\n");
             break :blk 0;
         },
-        .sync => if (cmd.search) try ctx.search(cmd.operands.items[0]) else if (cmd.info) try ctx.info(cmd.operands.items) else if (cmd.print) try @import("planner.zig").run(a, init.io, &ctx.client, cmd.operands.items, ctx.out, ctx.err) else try ctx.syncTransaction(cmd),
+        .sync => if (cmd.search) try ctx.search(cmd.operands.items[0]) else if (cmd.info) try ctx.info(cmd.operands.items) else if (cmd.print) try @import("planner.zig").run(a, init.io, &ctx.client, cmd.operands.items, ctx.out, ctx.err, ctx.color, ctx.err_color) else try ctx.syncTransaction(cmd),
         .remove => try ctx.privilegedPacman(cmd.raw_args.items),
         .query => try ctx.rawPacman(cmd.raw_args.items),
     };

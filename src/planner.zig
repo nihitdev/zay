@@ -4,7 +4,7 @@ const catalog = @import("catalog.zig");
 const resolver = @import("resolver.zig");
 const output = @import("output.zig");
 
-pub fn run(a: std.mem.Allocator, io: std.Io, client: *aur.Client, targets: []const []const u8, out: *std.Io.Writer, err: *std.Io.Writer) !u8 {
+pub fn run(a: std.mem.Allocator, io: std.Io, client: *aur.Client, targets: []const []const u8, out: *std.Io.Writer, err: *std.Io.Writer, color: bool, err_color: bool) !u8 {
     // Validate every target before opening databases or making network requests.
     for (targets) |text| _ = @import("dependency.zig").Dependency.parse(text) catch {
         try err.writeAll("error: invalid package target; use a package name with an optional version constraint\n");
@@ -14,16 +14,17 @@ pub fn run(a: std.mem.Allocator, io: std.Io, client: *aur.Client, targets: []con
     var host = catalog.Host.init(a, client);
     defer host.deinit();
     host.load(io) catch |failure| {
-        try report(err, failure, "", "", client, host.detail);
+        try report(err, failure, "", "", client, host.detail, err_color);
         return 2;
     };
     var graph: resolver.Graph = .{ .a = a, .catalog = host.view() };
     defer graph.deinit();
     graph.plan(targets) catch |failure| {
-        try report(err, failure, graph.problem, graph.related, client, host.detail);
+        try report(err, failure, graph.problem, graph.related, client, host.detail, err_color);
         return 2;
     };
-    try out.writeAll(":: dependency plan (no packages will be installed)\n");
+    try output.infoPrefix(out, color);
+    try out.writeAll("dependency plan (no packages will be installed)\n");
     // Repository packages form one pacman transaction; runtime cycles are legal
     // there. Only source builds need a dependency-ordered sequence.
     var repo: std.ArrayList(resolver.Record) = .empty;
@@ -40,38 +41,43 @@ pub fn run(a: std.mem.Allocator, io: std.Io, client: *aur.Client, targets: []con
         }
     }.less);
     if (repo.items.len != 0) {
-        try out.print("Repository packages ({d}):\n", .{repo.items.len});
+        try output.styled(out, color, .info, "Repository packages");
+        try out.print(" ({d}):\n", .{repo.items.len});
         for (repo.items) |p| {
             try out.writeAll("  ");
-            try output.safe(out, p.repository);
+            try output.styled(out, color, .heading, p.repository);
             try out.writeByte('/');
-            try output.safe(out, p.name);
+            try output.styled(out, color, .package, p.name);
             try out.writeByte(' ');
-            try output.safe(out, p.version);
+            try output.styled(out, color, .version, p.version);
             try out.writeByte('\n');
         }
     }
     if (graph.order.items.len != 0) {
-        try out.print("AUR build order ({d}):\n", .{graph.order.items.len});
+        try output.styled(out, color, .info, "AUR build order");
+        try out.print(" ({d}):\n", .{graph.order.items.len});
         for (graph.order.items) |i| {
             const build = graph.builds.items[i];
-            try out.writeAll("  aur/");
-            try output.safe(out, build.base);
+            try output.styled(out, color, .heading, "  aur/");
+            try output.styled(out, color, .package, build.base);
             try out.writeAll(":");
             for (build.packages.items) |id| {
                 try out.writeByte(' ');
-                try output.safe(out, graph.nodes.items[id].package.name);
+                try output.styled(out, color, .package, graph.nodes.items[id].package.name);
             }
             try out.writeByte('\n');
         }
-        try out.writeAll(":: AUR build files are untrusted; review is required before building\n");
+        try output.infoPrefix(out, color);
+        try output.styled(out, color, .warning, "AUR build files are untrusted; review is required before building");
+        try out.writeByte('\n');
     }
-    try out.print("Satisfied by installed packages: {d}\n", .{installed});
+    try output.styled(out, color, .info, "Satisfied by installed packages");
+    try out.print(": {d}\n", .{installed});
     return 0;
 }
 
-pub fn report(w: *std.Io.Writer, failure: anyerror, problem: []const u8, related: []const u8, client: *aur.Client, detail: []const u8) !void {
-    try w.writeAll("error: ");
+pub fn report(w: *std.Io.Writer, failure: anyerror, problem: []const u8, related: []const u8, client: *aur.Client, detail: []const u8, color: bool) !void {
+    try output.errorPrefix(w, color);
     if (problem.len != 0) {
         try output.safe(w, problem);
         try w.writeAll(": ");

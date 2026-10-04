@@ -27,14 +27,44 @@ review, and builds. It does not wrap yay, paru, or another AUR helper.
 
 ## Install
 
-### From the AUR
+Choose one installation method.
 
-The `zay-git` package is published on the [AUR](https://aur.archlinux.org/packages/zay-git).
-On Arch Linux, install Git and the standard package build tools, then clone and
-build the AUR package as a normal user:
+### 1. Manual installation (recommended)
+
+This builds zay directly from the upstream source. You need Arch Linux, Git,
+the standard build tools, and Zig 0.16.0. Install the prerequisites if needed:
 
 ```sh
-sudo pacman -S --needed base-devel git
+sudo pacman -S --needed base-devel git zig
+```
+
+Clone, build, verify, and install the executable:
+
+```sh
+git clone https://github.com/nihitdev/zay.git
+cd zay
+zig build -Doptimize=ReleaseFast
+./zig-out/bin/zay --version
+sudo install -Dm755 zig-out/bin/zay /usr/local/bin/zay
+```
+
+The build links against pacman's local package database through libalpm; on a
+standard Arch installation its development files are provided by pacman. Check
+that the installed executable is the one on your PATH with:
+
+```sh
+command -v zay
+zay --version
+```
+
+### 2. Install the `zay-git` AUR package
+
+Use this method if you prefer makepkg to build and install the package. The
+[`zay-git` package](https://aur.archlinux.org/packages/zay-git) tracks the
+upstream `main` branch. Install the build prerequisites:
+
+```sh
+sudo pacman -S --needed base-devel git zig
 
 git clone https://aur.archlinux.org/zay-git.git
 cd zay-git
@@ -46,33 +76,16 @@ less .SRCINFO
 makepkg -si
 ```
 
-`makepkg -si` resolves the package's Zig build dependency and asks pacman to
-install the finished package. **Do not run makepkg as root.** Check the current
-[PKGBUILD and package metadata](https://aur.archlinux.org/packages/zay-git)
-before each build; AUR build instructions are executable code.
+Run `makepkg` as your normal user; **never use `sudo makepkg`**. Review the
+PKGBUILD because AUR build instructions are executable code. `-s` asks pacman
+to install missing dependencies and `-i` installs the package after a
+successful build.
 
-After installation, verify zay is available:
+After either method, verify that zay is available:
 
 ```sh
+command -v zay
 zay --version
-```
-
-### Build from the upstream source
-
-For development or to build directly from GitHub, use Zig 0.16.0 and the system
-pacman/libalpm development files:
-
-```sh
-git clone https://github.com/nihitdev/zay.git
-cd zay
-zig build
-./zig-out/bin/zay --version
-```
-
-To install that build system-wide:
-
-```sh
-sudo install -Dm755 zig-out/bin/zay /usr/local/bin/zay
 ```
 
 ## Commands

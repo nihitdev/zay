@@ -26,10 +26,10 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Install libalpm headers and library
+      - name: Install libalpm and archive tools
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libalpm-dev libarchive-dev
+          sudo apt-get install --no-install-recommends -y libalpm-dev libarchive-dev libarchive-tools
 
       - name: Run maintainer checks
         run: scripts/check.sh

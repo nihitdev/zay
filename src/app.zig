@@ -34,6 +34,31 @@ const help =
     \\
 ;
 
+const RepoNames = struct {
+    names: std.StringHashMap(void),
+    storage: []u8,
+
+    fn deinit(self: *RepoNames, allocator: std.mem.Allocator) void {
+        self.names.deinit();
+        allocator.free(self.storage);
+    }
+};
+
+/// Parse pacman's repository inventory while retaining the bytes borrowed by
+/// the hash-map keys. Callers may release the subprocess result immediately.
+fn parseRepoNames(allocator: std.mem.Allocator, text: []const u8) !RepoNames {
+    const storage = try allocator.dupe(u8, text);
+    errdefer allocator.free(storage);
+    var names = std.StringHashMap(void).init(allocator);
+    errdefer names.deinit();
+    var lines = std.mem.tokenizeScalar(u8, storage, '\n');
+    while (lines.next()) |name| {
+        if (!aur.validName(name)) return error.MalformedPacmanOutput;
+        try names.put(name, {});
+    }
+    return .{ .names = names, .storage = storage };
+}
+
 const Context = struct {
     a: std.mem.Allocator,
     io: std.Io,
@@ -226,7 +251,7 @@ const Context = struct {
         };
     }
 
-    fn repoNames(self: *Context) !?std.StringHashMap(void) {
+    fn repoNames(self: *Context) !?RepoNames {
         const inventory = pacman.run(self.a, self.io, "-Slq", &.{}, false) catch |err| {
             try self.pacmanFailure(err);
             return null;
@@ -237,14 +262,7 @@ const Context = struct {
             if (inventory.stderr.len == 0) try self.diagnostic("could not read repository databases; check pacman configuration", .{});
             return null;
         }
-        var names = std.StringHashMap(void).init(self.a);
-        errdefer names.deinit();
-        var lines = std.mem.tokenizeScalar(u8, inventory.stdout, '\n');
-        while (lines.next()) |name| {
-            if (!aur.validName(name)) return error.MalformedPacmanOutput;
-            try names.put(name, {});
-        }
-        return names;
+        return try parseRepoNames(self.a, inventory.stdout);
     }
 
     /// Delegate repository targets to pacman; route AUR targets through zay's
@@ -255,12 +273,12 @@ const Context = struct {
         if (cmd.custom_database) return self.privilegedPacman(cmd.raw_args.items);
         if (cmd.operands.items.len == 0) return self.rawPacman(cmd.raw_args.items);
         var names = try self.repoNames() orelse return 2;
-        defer names.deinit();
+        defer names.deinit(self.a);
         var aur_targets: std.ArrayList([]const u8) = .empty;
         defer aur_targets.deinit(self.a);
         var aur_found = false;
         for (cmd.operands.items) |target| {
-            if (aur.validName(target) and !names.contains(target)) try aur_targets.append(self.a, target);
+            if (aur.validName(target) and !names.names.contains(target)) try aur_targets.append(self.a, target);
         }
         var start: usize = 0;
         while (start < aur_targets.items.len) : (start += @min(50, aur_targets.items.len - start)) {
@@ -387,4 +405,20 @@ pub fn run(init: std.process.Init) !u8 {
     try ctx.out.flush();
     try ctx.err.flush();
     return status;
+}
+
+test "repository inventory hash keys outlive subprocess output" {
+    const allocator = std.testing.allocator;
+    const subprocess_output = try allocator.dupe(u8, "linux\nfirefox\n");
+    var repo_names = try parseRepoNames(allocator, subprocess_output);
+    allocator.free(subprocess_output);
+    defer repo_names.deinit(allocator);
+
+    try std.testing.expect(repo_names.names.contains("linux"));
+    try std.testing.expect(repo_names.names.contains("firefox"));
+    try std.testing.expect(!repo_names.names.contains("mangowm"));
+}
+
+test "malformed repository inventory is rejected" {
+    try std.testing.expectError(error.MalformedPacmanOutput, parseRepoNames(std.testing.allocator, "not a package name!\n"));
 }

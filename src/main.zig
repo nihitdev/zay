@@ -8,6 +8,7 @@ pub fn main(init: std.process.Init) void {
     if (status != 0) std.process.exit(status);
 }
 test {
+    _ = @import("app.zig");
     _ = @import("cli.zig");
     _ = @import("aur.zig");
     _ = @import("process.zig");

@@ -19,7 +19,9 @@ case "$ZAY_TEST_MODE" in
 esac
 case "$1" in
   -Qm) exit 0 ;;
-  -Slq) printf 'firefox\n' ;;
+  -Slq)
+    if [ "$ZAY_TEST_MODE" = repo_target ]; then printf 'mangowm\n'; else printf 'firefox\n'; fi
+    ;;
   -Si) printf 'Repository      : extra\nName            : firefox\n' ;;
   -S|-S*) exit 0 ;;
   -R*|--remove) exit 0 ;;
@@ -72,6 +74,11 @@ cmp "$scratch/expected" "$scratch/args"
 check 0 -S --noconfirm firefox
 printf '%s\n' '-S' '--noconfirm' 'firefox' > "$scratch/expected"
 cmp "$scratch/expected" "$scratch/args"
+ZAY_TEST_MODE=repo_target
+check 0 -S mangowm
+printf '%s\n' '-S' 'mangowm' > "$scratch/expected"
+cmp "$scratch/expected" "$scratch/args"
+ZAY_TEST_MODE=normal
 check 0 -Sg base
 printf '%s\n' '-Sg' 'base' > "$scratch/expected"
 cmp "$scratch/expected" "$scratch/args"

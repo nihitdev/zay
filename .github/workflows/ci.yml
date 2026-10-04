@@ -29,7 +29,7 @@ jobs:
       - name: Install libalpm headers and library
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libalpm-dev
+          sudo apt-get install --no-install-recommends -y libalpm-dev libarchive-dev
 
       - name: Run maintainer checks
         run: scripts/check.sh

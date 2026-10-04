@@ -24,5 +24,7 @@ test {
     _ = @import("review.zig");
     _ = @import("builder.zig");
     _ = @import("transaction.zig");
+    _ = @import("upgrade.zig");
+    _ = @import("upgrade_flow.zig");
     _ = @import("resolver_test.zig");
 }

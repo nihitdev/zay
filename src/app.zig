@@ -298,49 +298,22 @@ const Context = struct {
             if (foreign.stderr.len == 0) try self.diagnostic("could not inspect installed foreign packages", .{});
             return null;
         }
-        const packages = upgrade.parseForeign(self.a, foreign.stdout) catch {
-            try self.diagnostic("pacman returned malformed installed foreign package data", .{});
-            return null;
+        return upgrade.discover(self.a, foreign.stdout, .{
+            .context = self,
+            .info = queryUpgradeInfo,
+        }) catch |failure| switch (failure) {
+            error.AurQueryFailed => null, // queryAur already emitted a diagnostic
+            error.MalformedPacmanOutput => blk: {
+                try self.diagnostic("pacman returned malformed installed foreign package data", .{});
+                break :blk null;
+            },
+            else => return failure,
         };
-        defer self.a.free(packages);
-        if (packages.len == 0) return @as(?[][]const u8, try self.a.alloc([]const u8, 0));
-        var installed = std.StringHashMap(upgrade.Installed).init(self.a);
-        defer installed.deinit();
-        for (packages) |pkg| try installed.put(pkg.name, pkg);
-        var names = std.ArrayList([]const u8).empty;
-        defer names.deinit(self.a);
-        for (packages) |pkg| try names.append(self.a, pkg.name);
-        std.mem.sort([]const u8, names.items, {}, upgrade.lessName);
-        var updates: std.ArrayList([]const u8) = .empty;
-        var updates_transferred = false;
-        defer if (!updates_transferred) {
-            for (updates.items) |name| self.a.free(name);
-            updates.deinit(self.a);
-        };
-        var start: usize = 0;
-        while (start < names.items.len) : (start += @min(50, names.items.len - start)) {
-            const batch = names.items[start..@min(start + 50, names.items.len)];
-            {
-                const response = try self.queryAur(.info, batch) orelse return null;
-                defer response.deinit();
-                const remote = try self.a.alloc(@import("package.zig").Package, response.count());
-                defer self.a.free(remote);
-                for (remote, 0..) |*pkg, i| pkg.* = response.get(i);
-                const local = try self.a.alloc(upgrade.Installed, batch.len);
-                defer self.a.free(local);
-                for (batch, 0..) |name, i| local[i] = installed.get(name).?;
-                const batch_updates = try upgrade.outdatedNames(self.a, local, remote);
-                defer {
-                    for (batch_updates) |name| self.a.free(name);
-                    self.a.free(batch_updates);
-                }
-                for (batch_updates) |name| try updates.append(self.a, try self.a.dupe(u8, name));
-            }
-        }
-        std.mem.sort([]const u8, updates.items, {}, upgrade.lessName);
-        const owned = try updates.toOwnedSlice(self.a);
-        updates_transferred = true;
-        return @as(?[][]const u8, owned);
+    }
+
+    fn queryUpgradeInfo(context: *anyopaque, terms: []const []const u8) anyerror!aur.Response {
+        const self: *Context = @ptrCast(@alignCast(context));
+        return (try self.queryAur(.info, terms)) orelse error.AurQueryFailed;
     }
 
     fn syncTransaction(self: *Context, cmd: cli.Command) !u8 {

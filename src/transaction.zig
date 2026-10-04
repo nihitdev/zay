@@ -10,6 +10,7 @@ const review = @import("review.zig");
 const builder = @import("builder.zig");
 const process = @import("process.zig");
 const output = @import("output.zig");
+const upgrade_flow = @import("upgrade_flow.zig");
 const Package = @import("package.zig").Package;
 
 const Prepared = struct {
@@ -172,42 +173,24 @@ pub fn install(a: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     for (prepared.items) |*item| try item.repository.recordReview(store, item.base);
 
     if (sysupgrade_args) |args| {
-        const status = try runSystemUpgrade(a, io, args, err, err_color);
+        var stages = SysupgradeStages{
+            .a = a,
+            .io = io,
+            .args = args,
+            .client = client,
+            .targets = targets,
+            .host = &host,
+            .graph = &graph,
+            .prepared = prepared.items,
+            .err = err,
+            .err_color = err_color,
+        };
+        const status = try upgrade_flow.run(.{
+            .context = &stages,
+            .repository_upgrade = SysupgradeStages.repositoryUpgrade,
+            .replan = SysupgradeStages.replan,
+        });
         if (status != 0) return status;
-
-        // pacman has refreshed sync databases and installed repository
-        // upgrades. Re-resolve dependencies against that new state, while
-        // refusing any AUR base that was not reviewed before the operation.
-        graph.deinit();
-        host.deinit();
-        host = catalog.Host.init(a, client);
-        host.load(io) catch |failure| {
-            try output.errorPrefix(err, err_color);
-            try err.print("repository upgrade completed, but the AUR dependency plan could not be refreshed: {s}\n", .{@import("diagnostic.zig").message(failure)});
-            try err.flush();
-            return 2;
-        };
-        graph = .{ .a = a, .catalog = host.view() };
-        graph.plan(targets) catch |failure| {
-            try @import("planner.zig").report(err, failure, graph.problem, graph.related, client, host.detail, err_color);
-            return 2;
-        };
-        for (graph.order.items) |build_id| {
-            const plan = graph.builds.items[build_id];
-            const item = findPrepared(prepared.items, plan.base) orelse {
-                try output.errorPrefix(err, err_color);
-                try err.print("repository upgrade changed the AUR dependency plan; new package base '{s}' needs review, rerun zay -Syu\n", .{plan.base});
-                try err.flush();
-                return 2;
-            };
-            for (plan.packages.items) |node_id| {
-                const pkg = packageFromRecord(graph.nodes.items[node_id].package);
-                aur_repo.validateMetadata(a, &item.info, plan.base, pkg, @tagName(@import("builtin").cpu.arch)) catch |failure| {
-                    try reportMetadata(err, err_color, plan.base, failure);
-                    return 2;
-                };
-            }
-        }
     }
 
     const repo_status = try pacmanInstall(a, io, graph.nodes.items, true, false, err);
@@ -319,6 +302,62 @@ fn systemUpgradeArgv(a: std.mem.Allocator, raw_args: []const []const u8, root: b
     if (!has_noconfirm) try args.append(a, "--noconfirm");
     return args.toOwnedSlice(a);
 }
+
+const SysupgradeStages = struct {
+    a: std.mem.Allocator,
+    io: std.Io,
+    args: []const []const u8,
+    client: *aur.Client,
+    targets: []const []const u8,
+    host: *catalog.Host,
+    graph: *resolver.Graph,
+    prepared: []Prepared,
+    err: *std.Io.Writer,
+    err_color: bool,
+
+    fn repositoryUpgrade(context: *anyopaque) anyerror!u8 {
+        const self: *SysupgradeStages = @ptrCast(@alignCast(context));
+        return runSystemUpgrade(self.a, self.io, self.args, self.err, self.err_color);
+    }
+
+    fn replan(context: *anyopaque) anyerror!u8 {
+        const self: *SysupgradeStages = @ptrCast(@alignCast(context));
+        // pacman has refreshed sync databases and installed repository
+        // upgrades. Re-resolve against that state, constrained to reviewed
+        // package bases, before the caller enters the AUR build phase.
+        self.graph.deinit();
+        self.host.deinit();
+        self.host.* = catalog.Host.init(self.a, self.client);
+        self.host.load(self.io) catch |failure| {
+            try output.errorPrefix(self.err, self.err_color);
+            try self.err.print("repository upgrade completed, but the AUR dependency plan could not be refreshed: {s}\n", .{@import("diagnostic.zig").message(failure)});
+            try self.err.flush();
+            return 2;
+        };
+        self.graph.* = .{ .a = self.a, .catalog = self.host.view() };
+        self.graph.plan(self.targets) catch |failure| {
+            try @import("planner.zig").report(self.err, failure, self.graph.problem, self.graph.related, self.client, self.host.detail, self.err_color);
+            return 2;
+        };
+        for (self.graph.order.items) |build_id| {
+            const plan = self.graph.builds.items[build_id];
+            const item = findPrepared(self.prepared, plan.base) orelse {
+                try output.errorPrefix(self.err, self.err_color);
+                try self.err.print("repository upgrade changed the AUR dependency plan; new package base '{s}' needs review, rerun zay -Syu\n", .{plan.base});
+                try self.err.flush();
+                return 2;
+            };
+            for (plan.packages.items) |node_id| {
+                const pkg = packageFromRecord(self.graph.nodes.items[node_id].package);
+                aur_repo.validateMetadata(self.a, &item.info, plan.base, pkg, @tagName(@import("builtin").cpu.arch)) catch |failure| {
+                    try reportMetadata(self.err, self.err_color, plan.base, failure);
+                    return 2;
+                };
+            }
+        }
+        return 0;
+    }
+};
 
 fn runSystemUpgrade(a: std.mem.Allocator, io: std.Io, raw_args: []const []const u8, err: *std.Io.Writer, err_color: bool) !u8 {
     const argv = try systemUpgradeArgv(a, raw_args, linux.geteuid() == 0);

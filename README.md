@@ -91,6 +91,9 @@ Search, info, planning, and install classification use the local pacman sync
 databases. Outside `-Syu`, zay does not refresh them automatically; use pacman
 to refresh databases when needed. zay supports a practical subset of pacman's
 CLI, not every operation or option. Unsupported combinations fail clearly.
+Recognized long options accept either one or two leading dashes (for example,
+`-noconfirm` and `--noconfirm`); zay normalizes the spelling before passing
+options through to pacman. Compact pacman options such as `-Syu` are unchanged.
 
 ### AUR-aware install
 

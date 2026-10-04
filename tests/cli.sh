@@ -60,6 +60,9 @@ cmp "$scratch/expected" "$scratch/args"
 check 0 -Qi --noconfirm pacman
 printf '%s\n' '-Qi' '--noconfirm' 'pacman' > "$scratch/expected"
 cmp "$scratch/expected" "$scratch/args"
+check 0 -Qi -noconfirm pacman
+printf '%s\n' '-Qi' '--noconfirm' 'pacman' > "$scratch/expected"
+cmp "$scratch/expected" "$scratch/args"
 printf 'local query\n' > "$scratch/expected"
 cmp "$scratch/expected" "$scratch/out"
 [ ! -s "$scratch/err" ]
@@ -77,6 +80,9 @@ printf '%s\n' '-R' '--noconfirm' 'firefox' > "$scratch/expected"
 cmp "$scratch/expected" "$scratch/args"
 check 0 --remove --recursive --nosave firefox
 printf '%s\n' '--remove' '--recursive' '--nosave' 'firefox' > "$scratch/expected"
+cmp "$scratch/expected" "$scratch/args"
+check 0 -S -refresh -sysupgrade -noconfirm
+printf '%s\n' '-S' '--refresh' '--sysupgrade' '--noconfirm' > "$scratch/expected"
 cmp "$scratch/expected" "$scratch/args"
 check 0 -Si firefox firefox
 [ "$(grep -c '^Name ' "$scratch/out")" = 1 ]

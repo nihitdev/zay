@@ -7,6 +7,9 @@ Notable user-visible changes are recorded here. Versions follow the project's
 
 - Add AUR-aware search, package information, dependency planning, and reviewed
   AUR package build/install flow.
+- Upgrade installed AUR packages as part of `-Syu`, with Arch version
+  comparison, pre-upgrade build-file review, and post-upgrade dependency
+  replanning against refreshed repository databases.
 - Delegate official repository operations and local package queries/removals to
   pacman.
 - Validate pinned `.SRCINFO`, package archive identity/version, and split/debug

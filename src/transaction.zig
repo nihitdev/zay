@@ -29,7 +29,13 @@ const Prepared = struct {
 
 /// Resolve, acquire and validate every AUR base before asking once for the
 /// operation. No package build or pacman transaction occurs before approval.
-pub fn install(a: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, client: *aur.Client, targets: []const []const u8, noconfirm: bool, color: bool, err_color: bool, out: *std.Io.Writer, err: *std.Io.Writer) !u8 {
+pub fn install(a: std.mem.Allocator, io: std.Io, environ: *const std.process.Environ.Map, client: *aur.Client, targets: []const []const u8, noconfirm: bool, sysupgrade_args: ?[]const []const u8, color: bool, err_color: bool, out: *std.Io.Writer, err: *std.Io.Writer) !u8 {
+    if (sysupgrade_args) |args| if (!supportsSysupgradeOptions(args)) {
+        try output.errorPrefix(err, err_color);
+        try err.writeAll("unsupported pacman options for AUR-aware -Syu\n");
+        try err.flush();
+        return 2;
+    };
     if (linux.geteuid() == 0) {
         try output.errorPrefix(err, err_color);
         try err.writeAll("refusing AUR builds as root; run zay as a normal user\n");
@@ -48,7 +54,15 @@ pub fn install(a: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         try @import("planner.zig").report(err, failure, graph.problem, graph.related, client, host.detail, err_color);
         return 2;
     };
-    if (graph.order.items.len == 0) return pacmanInstall(a, io, graph.nodes.items, noconfirm, false, err);
+    if (graph.order.items.len == 0) {
+        if (sysupgrade_args != null) {
+            try output.errorPrefix(err, err_color);
+            try err.writeAll("AUR update targets no longer resolve to AUR packages; rerun zay -Syu to replan\n");
+            try err.flush();
+            return 2;
+        }
+        return pacmanInstall(a, io, graph.nodes.items, noconfirm, false, err);
+    }
 
     var paths = cache.Paths.create(a, environ) catch |failure| {
         try reportCacheError(err, err_color, failure);
@@ -105,7 +119,7 @@ pub fn install(a: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     }
 
     try output.infoPrefix(out, color);
-    try out.writeAll("Packages to install:\n");
+    try out.writeAll(if (sysupgrade_args == null) "Packages to install:\n" else "System upgrade and AUR updates:\n");
     for (graph.nodes.items) |node| if (node.package.source == .repo) {
         try out.writeAll("  ");
         try output.safe(out, node.package.repository);
@@ -136,7 +150,7 @@ pub fn install(a: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         };
     }
     if (!noconfirm or containsUnreviewed(prepared.items)) {
-        switch (try confirm(io, out)) {
+        switch (try confirm(io, out, sysupgrade_args != null)) {
             .accepted => {},
             .rejected => {
                 try output.errorPrefix(err, err_color);
@@ -157,12 +171,51 @@ pub fn install(a: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     }
     for (prepared.items) |*item| try item.repository.recordReview(store, item.base);
 
+    if (sysupgrade_args) |args| {
+        const status = try runSystemUpgrade(a, io, args, err, err_color);
+        if (status != 0) return status;
+
+        // pacman has refreshed sync databases and installed repository
+        // upgrades. Re-resolve dependencies against that new state, while
+        // refusing any AUR base that was not reviewed before the operation.
+        graph.deinit();
+        host.deinit();
+        host = catalog.Host.init(a, client);
+        host.load(io) catch |failure| {
+            try output.errorPrefix(err, err_color);
+            try err.print("repository upgrade completed, but the AUR dependency plan could not be refreshed: {s}\n", .{@import("diagnostic.zig").message(failure)});
+            try err.flush();
+            return 2;
+        };
+        graph = .{ .a = a, .catalog = host.view() };
+        graph.plan(targets) catch |failure| {
+            try @import("planner.zig").report(err, failure, graph.problem, graph.related, client, host.detail, err_color);
+            return 2;
+        };
+        for (graph.order.items) |build_id| {
+            const plan = graph.builds.items[build_id];
+            const item = findPrepared(prepared.items, plan.base) orelse {
+                try output.errorPrefix(err, err_color);
+                try err.print("repository upgrade changed the AUR dependency plan; new package base '{s}' needs review, rerun zay -Syu\n", .{plan.base});
+                try err.flush();
+                return 2;
+            };
+            for (plan.packages.items) |node_id| {
+                const pkg = packageFromRecord(graph.nodes.items[node_id].package);
+                aur_repo.validateMetadata(a, &item.info, plan.base, pkg, @tagName(@import("builtin").cpu.arch)) catch |failure| {
+                    try reportMetadata(err, err_color, plan.base, failure);
+                    return 2;
+                };
+            }
+        }
+    }
+
     const repo_status = try pacmanInstall(a, io, graph.nodes.items, true, false, err);
     if (repo_status != 0) return repo_status;
 
-    for (graph.order.items, 0..) |build_id, prepared_index| {
+    for (graph.order.items) |build_id| {
         const plan = graph.builds.items[build_id];
-        const item = &prepared.items[prepared_index];
+        const item = findPrepared(prepared.items, plan.base) orelse return error.MissingPreparedPackageBase;
         var tree = builder.prepare(a, io, item.repository.path, item.repository.acquisition.revisions.fetched, paths.builds, plan.base) catch |failure| {
             try reportBuild(err, err_color, plan.base, failure);
             return 2;
@@ -217,6 +270,92 @@ test "AUR transaction does not silently ignore pacman options" {
     try std.testing.expect(!supportsOptions(&.{ "-S", "--root=/tmp/root", "foo" }));
 }
 
+pub fn supportsSysupgradeOptions(raw_args: []const []const u8) bool {
+    var sync = false;
+    var refresh = false;
+    var sysupgrade = false;
+    var sysupgrade_count: usize = 0;
+    for (raw_args) |arg| {
+        if (std.mem.eql(u8, arg, "--sync")) {
+            sync = true;
+        } else if (std.mem.eql(u8, arg, "--refresh")) {
+            refresh = true;
+        } else if (std.mem.eql(u8, arg, "--sysupgrade")) {
+            sysupgrade = true;
+        } else if (std.mem.eql(u8, arg, "--noconfirm") or std.mem.eql(u8, arg, "--")) {
+            // -- is harmless here because mixed AUR sysupgrades reject operands.
+        } else if (arg.len > 1 and arg[0] == '-' and arg[1] != '-') {
+            for (arg[1..]) |flag| switch (flag) {
+                'S' => sync = true,
+                'y' => refresh = true,
+                'u' => {
+                    sysupgrade = true;
+                    sysupgrade_count += 1;
+                },
+                else => return false,
+            };
+        } else return false;
+    }
+    return sync and refresh and sysupgrade and sysupgrade_count <= 1;
+}
+
+fn systemUpgradeArgv(a: std.mem.Allocator, raw_args: []const []const u8, root: bool) ![][]const u8 {
+    var args: std.ArrayList([]const u8) = .empty;
+    errdefer args.deinit(a);
+    if (root) {
+        try args.append(a, "pacman");
+    } else {
+        try args.appendSlice(a, &.{ "sudo", "pacman" });
+    }
+    var has_noconfirm = false;
+    for (raw_args) |arg| {
+        if (std.mem.eql(u8, arg, "--noconfirm")) has_noconfirm = true;
+        if (std.mem.eql(u8, arg, "--")) {
+            if (!has_noconfirm) try args.append(a, "--noconfirm");
+            has_noconfirm = true;
+        }
+        try args.append(a, arg);
+    }
+    if (!has_noconfirm) try args.append(a, "--noconfirm");
+    return args.toOwnedSlice(a);
+}
+
+fn runSystemUpgrade(a: std.mem.Allocator, io: std.Io, raw_args: []const []const u8, err: *std.Io.Writer, err_color: bool) !u8 {
+    const argv = try systemUpgradeArgv(a, raw_args, linux.geteuid() == 0);
+    defer a.free(argv);
+    return process.inherit(io, argv) catch |failure| {
+        try output.errorPrefix(err, err_color);
+        try err.print("{s}\n", .{privilegeMessage(failure, "pacman")});
+        try err.flush();
+        return 2;
+    };
+}
+
+test "combined sysupgrade accepts only explicitly supported pacman flags" {
+    try std.testing.expect(supportsSysupgradeOptions(&.{"-Syu"}));
+    try std.testing.expect(supportsSysupgradeOptions(&.{ "--sync", "--refresh", "--sysupgrade", "--noconfirm" }));
+    try std.testing.expect(supportsSysupgradeOptions(&.{"-Syyu"}));
+    try std.testing.expect(!supportsSysupgradeOptions(&.{"-Syyuu"}));
+    try std.testing.expect(!supportsSysupgradeOptions(&.{ "-Syu", "--ignore", "foo" }));
+    try std.testing.expect(!supportsSysupgradeOptions(&.{ "-Syu", "--color=always" }));
+    try std.testing.expect(!supportsSysupgradeOptions(&.{"-S"}));
+}
+
+test "system upgrade argv is explicit and avoids duplicate confirmation" {
+    const a = std.testing.allocator;
+    const argv = try systemUpgradeArgv(a, &.{"-Syu"}, false);
+    defer a.free(argv);
+    try std.testing.expectEqualSlices([]const u8, &.{ "sudo", "pacman", "-Syu", "--noconfirm" }, argv);
+
+    const with_delimiter = try systemUpgradeArgv(a, &.{ "-Syu", "--" }, true);
+    defer a.free(with_delimiter);
+    try std.testing.expectEqualSlices([]const u8, &.{ "pacman", "-Syu", "--noconfirm", "--" }, with_delimiter);
+
+    const already = try systemUpgradeArgv(a, &.{ "-Syu", "--noconfirm" }, true);
+    defer a.free(already);
+    try std.testing.expectEqualSlices([]const u8, &.{ "pacman", "-Syu", "--noconfirm" }, already);
+}
+
 fn packageFromRecord(record: resolver.Record) Package {
     return .{ .name = record.name, .base = record.base, .version = record.version, .description = null, .url = null, .maintainer = null, .votes = 0, .popularity = 0, .out_of_date = null, .depends = record.depends, .make_depends = record.make_depends, .check_depends = record.check_depends, .provides = record.provides, .opt_depends = record.opt_depends, .conflicts = record.conflicts, .replaces = record.replaces };
 }
@@ -226,11 +365,16 @@ fn containsUnreviewed(items: []const Prepared) bool {
     return false;
 }
 
+fn findPrepared(items: []Prepared, base: []const u8) ?*Prepared {
+    for (items) |*item| if (std.mem.eql(u8, item.base, base)) return item;
+    return null;
+}
+
 const Confirmation = enum { accepted, rejected, unavailable };
 
-fn confirm(io: std.Io, out: *std.Io.Writer) !Confirmation {
+fn confirm(io: std.Io, out: *std.Io.Writer, system_upgrade: bool) !Confirmation {
     if (!try std.Io.File.stdin().isTty(io)) return .unavailable;
-    try out.writeAll("Proceed with installation? [y/N] ");
+    try out.writeAll(if (system_upgrade) "Proceed with system upgrade? [y/N] " else "Proceed with installation? [y/N] ");
     try out.flush();
     var storage: [128]u8 = undefined;
     var reader = std.Io.File.stdin().readerStreaming(io, &storage);

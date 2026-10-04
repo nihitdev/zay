@@ -6,14 +6,14 @@ const pacman = @import("pacman.zig");
 const process = @import("process.zig");
 const output = @import("output.zig");
 const diagnostics = @import("diagnostic.zig");
-const alpm = @import("alpm.zig").c;
 const transaction = @import("transaction.zig");
+const upgrade = @import("upgrade.zig");
 
 const help =
     \\zay 0.1.0 — pacman operations with AUR-aware search and safety checks
     \\Usage:
     \\  zay -S <repo-package>...  Install repository packages via pacman
-    \\  zay -Syu                  Upgrade repositories via pacman
+    \\  zay -Syu                  Upgrade repositories and outdated AUR packages
     \\  zay -Rns <package>...     Remove packages via pacman
     \\  zay -Sp <package>...  Print a dependency plan without installing
     \\  zay -Ss <query>        Search repositories and AUR (one query)
@@ -24,11 +24,11 @@ const help =
     \\Long options: --sync, --remove, --query, --search, --info, --foreign.
     \\  --refresh --sysupgrade --recursive --nosave --cascade --unneeded
     \\  --groups --list --needed --downloadonly
-    \\  --noconfirm           Do not ask for confirmation
+    \\  --noconfirm           Skip ordinary prompts; AUR build review is still required
     \\  --print               Print a dependency plan (-S only)
     \\Use -- to end options. Official package transactions use pacman.
     \\AUR packages are dependency-planned, revision-reviewed, then built as the user.
-    \\AUR updates block -Syu until combined AUR upgrades are supported.
+    \\AUR upgrades are reviewed and built as part of -Syu.
     \\Exit: 0 success; 1 no match/not found; 2 usage or incomplete/failed lookup.
     \\Local queries preserve pacman's exit status (signals: 128 + signal).
     \\
@@ -279,59 +279,68 @@ const Context = struct {
                 try self.diagnostic("one or more pacman options are not supported for mixed AUR transactions", .{});
                 return 2;
             }
-            return transaction.install(self.a, self.io, self.environ, &self.client, cmd.operands.items, cmd.noconfirm, self.color, self.err_color, self.out, self.err);
+            return transaction.install(self.a, self.io, self.environ, &self.client, cmd.operands.items, cmd.noconfirm, null, self.color, self.err_color, self.out, self.err);
         }
         return self.privilegedPacman(cmd.raw_args.items);
     }
 
-    /// Do not start a repository upgrade that would leave an outdated AUR
-    /// package behind. AUR versions use libalpm's Arch comparison semantics.
-    fn checkAurUpgrades(self: *Context) !bool {
+    /// Collect installed foreign packages for which the AUR has a newer
+    /// version. Unknown/local foreign packages without an AUR result are kept
+    /// installed and do not prevent repository upgrades.
+    fn aurUpdates(self: *Context) !?[][]const u8 {
         const foreign = process.capture(self.a, self.io, &.{ "pacman", "-Qm" }) catch |err| {
             try self.pacmanFailure(err);
-            return false;
+            return null;
         };
         defer foreign.deinit();
         if (foreign.code() != 0) {
             try self.err.writeAll(foreign.stderr);
             if (foreign.stderr.len == 0) try self.diagnostic("could not inspect installed foreign packages", .{});
-            return false;
+            return null;
         }
-        var installed = std.StringHashMap([]const u8).init(self.a);
+        const packages = upgrade.parseForeign(self.a, foreign.stdout) catch {
+            try self.diagnostic("pacman returned malformed installed foreign package data", .{});
+            return null;
+        };
+        defer self.a.free(packages);
+        if (packages.len == 0) return @as(?[][]const u8, try self.a.alloc([]const u8, 0));
+        var installed = std.StringHashMap(upgrade.Installed).init(self.a);
         defer installed.deinit();
-        var lines = std.mem.tokenizeScalar(u8, foreign.stdout, '\n');
-        while (lines.next()) |line| {
-            var fields = std.mem.tokenizeAny(u8, line, " \t\r");
-            const name = fields.next() orelse continue;
-            const version = fields.next() orelse return error.MalformedPacmanOutput;
-            if (!aur.validName(name) or !@import("package.zig").validVersion(version) or fields.next() != null)
-                return error.MalformedPacmanOutput;
-            try installed.put(name, version);
-        }
-        if (installed.count() == 0) return true;
+        for (packages) |pkg| try installed.put(pkg.name, pkg);
         var names = std.ArrayList([]const u8).empty;
         defer names.deinit(self.a);
-        var iterator = installed.iterator();
-        while (iterator.next()) |entry| try names.append(self.a, entry.key_ptr.*);
+        for (packages) |pkg| try names.append(self.a, pkg.name);
+        std.mem.sort([]const u8, names.items, {}, upgrade.lessName);
+        var updates: std.ArrayList([]const u8) = .empty;
+        var updates_transferred = false;
+        defer if (!updates_transferred) {
+            for (updates.items) |name| self.a.free(name);
+            updates.deinit(self.a);
+        };
         var start: usize = 0;
         while (start < names.items.len) : (start += @min(50, names.items.len - start)) {
             const batch = names.items[start..@min(start + 50, names.items.len)];
-            const response = try self.queryAur(.info, batch) orelse return false;
-            defer response.deinit();
-            for (0..response.count()) |i| {
-                const remote = response.get(i);
-                const current = installed.get(remote.name) orelse continue;
-                const current_z = try self.a.dupeZ(u8, current);
-                defer self.a.free(current_z);
-                const remote_z = try self.a.dupeZ(u8, remote.version);
-                defer self.a.free(remote_z);
-                if (alpm.alpm_pkg_vercmp(current_z, remote_z) < 0) {
-                    try self.diagnostic("AUR update available for '{s}'; refusing a partial -Syu until safe AUR builds are supported", .{remote.name});
-                    return false;
+            {
+                const response = try self.queryAur(.info, batch) orelse return null;
+                defer response.deinit();
+                const remote = try self.a.alloc(@import("package.zig").Package, response.count());
+                defer self.a.free(remote);
+                for (remote, 0..) |*pkg, i| pkg.* = response.get(i);
+                const local = try self.a.alloc(upgrade.Installed, batch.len);
+                defer self.a.free(local);
+                for (batch, 0..) |name, i| local[i] = installed.get(name).?;
+                const batch_updates = try upgrade.outdatedNames(self.a, local, remote);
+                defer {
+                    for (batch_updates) |name| self.a.free(name);
+                    self.a.free(batch_updates);
                 }
+                for (batch_updates) |name| try updates.append(self.a, try self.a.dupe(u8, name));
             }
         }
-        return true;
+        std.mem.sort([]const u8, updates.items, {}, upgrade.lessName);
+        const owned = try updates.toOwnedSlice(self.a);
+        updates_transferred = true;
+        return @as(?[][]const u8, owned);
     }
 
     fn syncTransaction(self: *Context, cmd: cli.Command) !u8 {
@@ -340,8 +349,21 @@ const Context = struct {
                 try self.diagnostic("cannot verify AUR upgrades with custom pacman database options; refusing a partial -Syu", .{});
                 return 2;
             }
-            if (!try self.checkAurUpgrades()) return 2;
-            return self.privilegedPacman(cmd.raw_args.items);
+            const updates = try self.aurUpdates() orelse return 2;
+            defer {
+                for (updates) |name| self.a.free(name);
+                self.a.free(updates);
+            }
+            if (updates.len == 0) return self.privilegedPacman(cmd.raw_args.items);
+            if (cmd.operands.items.len != 0) {
+                try self.diagnostic("combining explicit package targets with AUR upgrades is not supported; run them separately", .{});
+                return 2;
+            }
+            if (!transaction.supportsSysupgradeOptions(cmd.raw_args.items)) {
+                try self.diagnostic("one or more pacman options are not supported for AUR-aware -Syu", .{});
+                return 2;
+            }
+            return transaction.install(self.a, self.io, self.environ, &self.client, updates, cmd.noconfirm, cmd.raw_args.items, self.color, self.err_color, self.out, self.err);
         }
         if (cmd.pacman_only) return self.rawPacman(cmd.raw_args.items);
         if (cmd.operands.items.len == 0 or cmd.refresh) return self.privilegedPacman(cmd.raw_args.items);

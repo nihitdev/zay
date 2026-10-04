@@ -85,12 +85,12 @@ sudo install -Dm755 zig-out/bin/zay /usr/local/bin/zay
 | `zay -S package` | Install a repository package or review/build an AUR package |
 | `zay -Rns package` | Delegate package removal to pacman |
 | `zay -Qm` | List installed foreign packages |
-| `zay -Syu` | Check for AUR updates and refuse an unsafe partial upgrade |
+| `zay -Syu` | Upgrade repository packages and review/build outdated AUR packages |
 
-zay uses the local pacman sync databases for repository search and planning; it
-does not refresh them automatically. Use pacman to refresh databases when
-needed. zay supports a practical subset of pacman's CLI, not every operation or
-option. Unsupported combinations fail clearly.
+Search, info, planning, and install classification use the local pacman sync
+databases. Outside `-Syu`, zay does not refresh them automatically; use pacman
+to refresh databases when needed. zay supports a practical subset of pacman's
+CLI, not every operation or option. Unsupported combinations fail clearly.
 
 ### AUR-aware install
 
@@ -102,10 +102,20 @@ pacman. Official packages continue to use pacman directly.
 
 ### Upgrades
 
-`-Syu` checks installed foreign packages against AUR versions before it starts
-the official repository upgrade. If an installed AUR package is outdated, zay
-stops instead of leaving the system in a partial-upgrade state. Combined
-repository and AUR upgrades are not implemented yet.
+`-Syu` checks installed foreign packages against AUR versions using Arch's
+version comparison. zay presents changed AUR build files for review and asks
+for transaction approval before starting the repository upgrade. It then runs
+pacman's system upgrade and replans AUR dependencies against the updated
+repository state before building the reviewed AUR revisions. Any newly needed
+or materially changed AUR metadata that was not covered by the review stops
+the AUR portion safely and asks you to rerun `zay -Syu`.
+
+When an AUR update is present, zay currently accepts the basic `-Syu` forms
+(including `-Syyu` and long operation names) and `--noconfirm`; unsupported
+pacman option combinations and explicit package targets are rejected instead
+of being silently dropped. Foreign packages with no matching AUR RPC entry are
+left alone. `--noconfirm` skips ordinary confirmation only for already
+reviewed build revisions; it never approves first-seen or changed build files.
 
 ## AUR safety
 

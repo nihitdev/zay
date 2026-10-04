@@ -68,6 +68,10 @@ fn safeImpl(w: *std.Io.Writer, value: []const u8, multiline: bool) !void {
     }
 }
 pub fn search(w: *std.Io.Writer, p: Package, color: bool) !void {
+    if (color) {
+        try styled(w, true, .heading, "◆");
+        try w.writeByte(' ');
+    }
     try styled(w, color, .heading, "aur/");
     try styled(w, color, .package, p.name);
     try w.writeByte(' ');
@@ -83,6 +87,45 @@ pub fn search(w: *std.Io.Writer, p: Package, color: bool) !void {
     try w.writeAll("\n    ");
     try safe(w, p.description orelse "(no description)");
     try w.writeByte('\n');
+}
+
+/// Render pacman's search format with source/package/version highlighting.
+/// Pacman's color is disabled for captured output so names remain parseable;
+/// only its stable header fields are restyled here. Descriptions are escaped
+/// because repository metadata can still contain terminal control bytes.
+pub fn repositorySearch(w: *std.Io.Writer, text: []const u8, color: bool) !void {
+    if (!color) return w.writeAll(text);
+
+    const content = if (std.mem.endsWith(u8, text, "\n")) text[0 .. text.len - 1] else text;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) {
+            try w.writeByte('\n');
+            continue;
+        }
+        if (std.ascii.isWhitespace(line[0])) {
+            try safeMultiline(w, line);
+            try w.writeByte('\n');
+            continue;
+        }
+
+        const slash = std.mem.indexOfScalar(u8, line, '/') orelse return error.MalformedPacmanOutput;
+        const name_end = std.mem.indexOfScalarPos(u8, line, slash + 1, ' ') orelse return error.MalformedPacmanOutput;
+        const version_start = name_end + 1;
+        const version_end = std.mem.indexOfScalarPos(u8, line, version_start, ' ') orelse line.len;
+        if (slash == 0 or slash + 1 == name_end or version_start == version_end)
+            return error.MalformedPacmanOutput;
+
+        try styled(w, true, .info, "●");
+        try w.writeByte(' ');
+        try safe(w, line[0..slash]);
+        try styled(w, true, .heading, "/");
+        try styled(w, true, .package, line[slash + 1 .. name_end]);
+        try w.writeByte(' ');
+        try styled(w, true, .version, line[version_start..version_end]);
+        if (version_end < line.len) try safe(w, line[version_end..]);
+        try w.writeByte('\n');
+    }
 }
 fn field(w: *std.Io.Writer, color: bool, label: []const u8, value: []const u8, value_style: Style) !void {
     try styled(w, color, .info, label);
@@ -173,4 +216,29 @@ test "search output is compact and adds no escapes without color" {
     };
     try search(&w, p, false);
     try std.testing.expectEqualStrings("aur/example 1-1 [orphaned] [out-of-date]\n    A package\n", w.buffered());
+}
+
+test "repository search stays pacman-like without color and marks styled sources" {
+    const input = "extra/firefox 130.0-1\n    Fast browser\n";
+    var plain_buffer: [256]u8 = undefined;
+    var plain = std.Io.Writer.fixed(&plain_buffer);
+    try repositorySearch(&plain, input, false);
+    try std.testing.expectEqualStrings(input, plain.buffered());
+
+    var color_buffer: [512]u8 = undefined;
+    var color = std.Io.Writer.fixed(&color_buffer);
+    try repositorySearch(&color, input, true);
+    try std.testing.expectEqualStrings(
+        "\x1b[1;36m●\x1b[0m extra\x1b[1;35m/\x1b[0m\x1b[1mfirefox\x1b[0m " ++
+            "\x1b[1;32m130.0-1\x1b[0m\n    Fast browser\n",
+        color.buffered(),
+    );
+}
+
+test "colored repository search escapes terminal controls in descriptions" {
+    var buffer: [256]u8 = undefined;
+    var w = std.Io.Writer.fixed(&buffer);
+    try repositorySearch(&w, "extra/pkg 1-1\n    unsafe\x1b[31m text\n", true);
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "unsafe?[31m text") != null);
+    try std.testing.expect(std.mem.indexOf(u8, w.buffered(), "\x1b[31m text") == null);
 }

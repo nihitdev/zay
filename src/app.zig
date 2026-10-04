@@ -97,7 +97,7 @@ const Context = struct {
                 names.deinit();
                 names = parsed_names;
                 found = names.count() != 0;
-                try self.out.writeAll(r.stdout);
+                try output.repositorySearch(self.out, r.stdout, self.color);
                 try self.out.flush();
             }
         }

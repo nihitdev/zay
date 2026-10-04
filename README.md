@@ -14,146 +14,186 @@
   <p>
     <a href="#install">Install</a> ·
     <a href="#commands">Commands</a> ·
-    <a href="#security">AUR safety</a> ·
+    <a href="#aur-safety">AUR safety</a> ·
     <a href="#development">Development</a>
   </p>
 </div>
 
 ---
 
-zay combines pacman-style commands with its own AUR support. Official repository
-operations stay with pacman; zay handles AUR search, dependency planning, source
-review, and builds. It does not wrap yay, paru, or another AUR helper.
+## What is zay?
+
+zay combines familiar pacman-style commands with native AUR support.
+
+| pacman handles | zay adds |
+| --- | --- |
+| Official repository operations | AUR search and package metadata |
+| System package database | AUR dependency planning and builds |
+| Package installation and removal | Review of untrusted AUR build files |
+
+zay implements its own AUR functionality. It does not wrap yay, paru, or
+another AUR helper.
+
+---
 
 ## Install
 
-Choose one installation method.
+Choose one of the following methods.
 
-### 1. Manual installation (recommended)
+### 1. Manual installation — recommended
 
-This builds zay directly from the upstream source. You need Arch Linux, Git,
-the standard build tools, and Zig 0.16.0. Install the prerequisites if needed:
+Build zay directly from the upstream source. This requires Arch Linux, Git,
+the standard build tools, and Zig 0.16.0.
+
+**Install prerequisites**
 
 ```sh
 sudo pacman -S --needed base-devel git zig
 ```
 
-Clone, build, verify, and install the executable:
+**Clone and build**
 
 ```sh
 git clone https://github.com/nihitdev/zay.git
 cd zay
 zig build -Doptimize=ReleaseFast
+```
+
+**Check the binary, then install it**
+
+```sh
 ./zig-out/bin/zay --version
 sudo install -Dm755 zig-out/bin/zay /usr/local/bin/zay
 ```
 
-The build links against pacman's local package database through libalpm; on a
-standard Arch installation its development files are provided by pacman. Check
-that the installed executable is the one on your PATH with:
-
-```sh
-command -v zay
-zay --version
-```
+The build links to pacman's local package database through libalpm. A standard
+Arch installation provides the required files with pacman.
 
 ### 2. Install the `zay-git` AUR package
 
-Use this method if you prefer makepkg to build and install the package. The
-[`zay-git` package](https://aur.archlinux.org/packages/zay-git) tracks the
-upstream `main` branch. Install the build prerequisites:
+The [`zay-git` package](https://aur.archlinux.org/packages/zay-git) builds zay
+from the upstream `main` branch using makepkg.
+
+**Install prerequisites**
 
 ```sh
 sudo pacman -S --needed base-devel git zig
+```
 
+**Get the AUR package and review its build files**
+
+```sh
 git clone https://aur.archlinux.org/zay-git.git
 cd zay-git
-
-# Read the build instructions before executing them.
 less PKGBUILD
 less .SRCINFO
+```
 
+**Build and install as your normal user**
+
+```sh
 makepkg -si
 ```
 
-Run `makepkg` as your normal user; **never use `sudo makepkg`**. Review the
-PKGBUILD because AUR build instructions are executable code. `-s` asks pacman
-to install missing dependencies and `-i` installs the package after a
-successful build.
+`-s` asks pacman to install missing dependencies; `-i` installs the package
+after a successful build. **Do not run `makepkg` as root.** The PKGBUILD is
+executable code supplied by the AUR, so review it before building.
 
-After either method, verify that zay is available:
+### Verify the installation
+
+Use these commands after either method:
 
 ```sh
 command -v zay
 zay --version
 ```
 
+---
+
 ## Commands
 
-| Command | What it does |
+| Command | Behavior |
 | --- | --- |
-| `zay -Ss query` | Search configured repository databases and the AUR |
+| `zay -Ss query` | Search configured repositories and the AUR |
 | `zay -Si package` | Show repository or AUR package information |
 | `zay -Sp package` | Resolve dependencies and print a plan without installing |
-| `zay -S package` | Install a repository package or review/build an AUR package |
-| `zay -Rns package` | Delegate package removal to pacman |
+| `zay -S package` | Install a repository package or review and build an AUR package |
+| `zay -Rns package` | Remove a package through pacman |
 | `zay -Qm` | List installed foreign packages |
-| `zay -Syu` | Upgrade repository packages and review/build outdated AUR packages |
+| `zay -Syu` | Upgrade repository packages and handle outdated AUR packages |
 
-Search, info, planning, and install classification use the local pacman sync
-databases. Outside `-Syu`, zay does not refresh them automatically; use pacman
-to refresh databases when needed. zay supports a practical subset of pacman's
-CLI, not every operation or option. Unsupported combinations fail clearly.
-Recognized long options accept either one or two leading dashes (for example,
-`-noconfirm` and `--noconfirm`); zay normalizes the spelling before passing
-options through to pacman. Compact pacman options such as `-Syu` are unchanged.
+### Command-line behavior
 
-### AUR-aware install
+- Search, info, planning, and install classification use the local pacman sync
+  databases.
+- Outside `-Syu`, zay does not refresh sync databases automatically. Refresh
+  them with pacman when needed.
+- zay supports a practical subset of pacman's CLI, not every operation or
+  option. Unsupported combinations fail clearly.
+- Long options may use one or two leading dashes, such as `-noconfirm` or
+  `--noconfirm`. Compact options such as `-Syu` remain unchanged.
 
-For an AUR target, zay resolves dependencies, fetches the package base, checks
-pinned `.SRCINFO` against AUR metadata, and presents new or changed build files
-for review. After approval, zay builds as the invoking user, validates the
-resulting package identities and versions, and hands selected packages to
-pacman. Official packages continue to use pacman directly.
+### AUR package installation
 
-### Upgrades
+For an AUR target, zay:
 
-`-Syu` checks installed foreign packages against AUR versions using Arch's
-version comparison. zay presents changed AUR build files for review and asks
-for transaction approval before starting the repository upgrade. It then runs
-pacman's system upgrade and replans AUR dependencies against the updated
-repository state before building the reviewed AUR revisions. Any newly needed
-or materially changed AUR metadata that was not covered by the review stops
-the AUR portion safely and asks you to rerun `zay -Syu`.
+1. Resolves dependencies and fetches the package base.
+2. Checks pinned `.SRCINFO` against AUR metadata.
+3. Presents new or changed build files for review.
+4. Builds as the invoking user after approval.
+5. Validates package identity and version before handing artifacts to pacman.
 
-When an AUR update is present, zay currently accepts the basic `-Syu` forms
-(including `-Syyu` and long operation names) and `--noconfirm`; unsupported
-pacman option combinations and explicit package targets are rejected instead
-of being silently dropped. Foreign packages with no matching AUR RPC entry are
-left alone. `--noconfirm` skips ordinary confirmation only for already
-reviewed build revisions; it never approves first-seen or changed build files.
+Official repository packages continue to use pacman directly.
+
+### System and AUR upgrades
+
+With `-Syu`, zay checks installed foreign packages against AUR versions using
+Arch-compatible version comparison. Changed AUR build files are reviewed
+before the repository upgrade begins. After pacman upgrades the system, zay
+replans AUR dependencies against the refreshed repository state.
+
+If replanning needs an AUR base that was not reviewed, zay stops the AUR part
+safely and asks you to run `zay -Syu` again. Foreign packages without a
+matching AUR RPC entry are left alone.
+
+When AUR updates are present, zay accepts basic `-Syu` forms (including
+`-Syyu` and long operation names) and `--noconfirm`. Unsupported option
+combinations and explicit package targets fail instead of being discarded.
+`--noconfirm` skips ordinary prompts for already reviewed revisions; it never
+approves first-seen or changed build files.
+
+---
 
 ## AUR safety
 
-AUR packages are community build recipes, not reviewed binaries. PKGBUILDs and
-related build files can execute arbitrary shell code.
+> AUR packages are community build recipes, not reviewed binaries. PKGBUILDs
+> and related files can execute arbitrary code.
 
-- zay shows first-seen or changed build files and ties approval to the exact Git
-  commit being built.
-- `--noconfirm` does not approve new or changed build files.
+- New or changed build files are shown for review, with approval tied to the
+  exact Git commit being built.
+- `--noconfirm` does not approve a new or changed build revision.
 - makepkg and package functions run as the normal user, never as root.
 - Only pacman operations that need elevated privileges are run with elevation.
 - Package artifacts are checked before zay passes them to pacman.
 
-Review is a chance to inspect build instructions; it is not a sandbox. AUR
-build code can access files and services available to your user. See
-[SECURITY.md](SECURITY.md) for reporting and project security boundaries.
+Review gives you a chance to inspect build instructions; it is not a sandbox.
+AUR build code can access files and services available to your user. See the
+[security policy](SECURITY.md) for reporting and project security boundaries.
+
+---
 
 ## Development
 
-Requirements: Arch Linux, Zig 0.16.0, pacman/libalpm development files, and
-standard build tools. AUR transaction code additionally uses Git, makepkg,
-bsdtar, and a privilege helper for pacman installation.
+### Requirements
+
+- Arch Linux
+- Zig 0.16.0
+- pacman/libalpm development files
+- Standard build tools
+- Git, makepkg, and bsdtar for AUR transactions
+- A privilege helper for pacman operations that require elevation
+
+### Build and test
 
 ```sh
 zig build
@@ -167,6 +207,8 @@ scripts/check.sh
 Tests use temporary directories, synthetic package databases, local Git
 repositories, and fake subprocesses. They do not access the network, execute
 PKGBUILDs, or install/remove host packages.
+
+---
 
 ## Project links
 
